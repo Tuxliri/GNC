@@ -1,0 +1,13 @@
+\begindata
+ 
+      SITES                       += 'EXM_RSP'
+      EXM_RSP_FRAME               = 'IAU_MARS'
+      EXM_RSP_CENTER              = 499
+      EXM_RSP_IDCODE              = -76
+      EXM_RSP_BOUNDS              = ( @1950-JAN-01/00:00,  @2050-JAN-01/00:00 )
+      EXM_RSP_LATLON              = (    18.20
+                                        -24.55
+                                         -2.75
+                                    )
+
+\begintext

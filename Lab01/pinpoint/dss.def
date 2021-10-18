@@ -1,0 +1,20 @@
+\begindata
+
+   SITES         = ( 'DSS-12',
+                     'ESA-NNO' )
+
+   DSS-12_CENTER  = 399
+   DSS-12_FRAME   = 'IAU_EARTH'
+   DSS-12_IDCODE  = 399001
+   DSS-12_XYZ     = ( -2350.443812, -4651.980837, +3665.630988 )
+   DSS-12_UP      = 'Z'
+   DSS-12_NORTH   = 'X'
+
+   ESA-NNO_CENTER = 399
+   ESA-NNO_FRAME  = 'IAU_EARTH'
+   ESA-NNO_IDCODE = 399002
+   ESA-NNO_LATLON = ( -31.0482, 116.191, 0.252 )
+   ESA-NNO_UP     = 'Z'
+   ESA-NNO_NORTH  = 'X'
+
+\begintext
