@@ -38,9 +38,10 @@ dv0 = [0.5 0 0]';
 dx0 = [dr0; dv0];
 t=0.1;
 
+% STM has been validated already
 dxend = flow2BP(x0+dx0,t0,t,primary.GM) - xend;
-STM = stateTransitionMatrix(t0,t,x0,primary.GM);
-dxend1 = STM*dx0;
+% STM = stateTransitionMatrix(t0,t,x0,primary.GM);
+% dxend1 = STM*dx0;
 
 %% #2 LAMBERT PROBLEM SHOOTING SOLVER
 % VALIDATE WITH EXAMPLE 8.8 of Curtis
@@ -101,16 +102,21 @@ sol2 = fsolve(E2M);
 %% #3 delta_v minimizer
 departure.Label = 'Earth';
 arrival.Label = 'Mars';
-departure.lb = cspice_str2et('2019-Jun-1 00:00:00.0000 TDB');
-departure.ub = cspice_str2et('2021-Jun-1 00:00:00.0000 TDB');
-arrival.lb = cspice_str2et('2020-Jan-1 00:00:00.0000 TDB');
-arrival.ub = cspice_str2et('2022-Jan-1 00:00:00.0000 TDB');
+departure.lb = cspice_str2et('2022-Jan-1 00:00:00.0000 TDB');
+departure.ub = cspice_str2et('2023-Jan-1 00:00:00.0000 TDB');
+% Minimum/maximum ToF in days
+maxToF = 300*cspice_spd(); 
+minToF = 100*cspice_spd();
+
+
+arrival.lb = departure.lb + minToF;
+arrival.ub = departure.ub + maxToF;
 
 % Define inital guess for the state (from computing DV grid) 
 stateDep = cspice_spkezr(departure.Label,7511*24*3600,frame,'NONE',primary.label);
 y0 = [stateDep; 7511*24*3600; 7716*24*3600];
 
-% Define problem structure
+% Define optimization problem structure
 E2M.objective = @(y) costFcn(y,departure,arrival,primary,frame); 
 E2M.x0 = y0; % Initial guess for the state
 E2M.lb = [-Inf*ones(6,1); departure.lb; arrival.lb];
@@ -123,7 +129,7 @@ opts = optimoptions('fmincon');
 opts.ConstraintTolerance = 1;
 opts.Display = 'iter';
 opts.PlotFcn = 'optimplotfval';
-opts.MaxFunctionEvaluations = 1000;
+% opts.MaxFunctionEvaluations = 1000;
 E2M.options = opts;
 
 % Compute solution
@@ -131,11 +137,64 @@ E2M.options = opts;
 
 cspice_kclear();
 
-%% Ex 2
-% clearvars; close all; clc
+%% Ex 2 (pretty okay)
+clearvars; close all; clc
 
 % Load kernels
-% cspice_furnsh('assignment01.tm');
+cspice_furnsh('assignment01.tm');
+
+% Define boundary conditions
+r0 = [0 -29597.43 0]';
+v0 = [1.8349 0.0002 3.1783]';
+m0 = 735;
+rf = [0 -29617.43 0]';
+vf = [1.8371 0.0002 3.1755]';
+
+% Define S/C parameters
+Tmax = 1000e-3;
+Isp = 3000;
+t0 = 0;
+GM = 398600;
+
+% Initial guess for the unknown
+Lambda0_guess = [.1 .1 .1 .1 .1 .1 .1 10000]';
+options = optimoptions('fsolve');
+options.Display='iter';
+options.FiniteDifferenceType = 'central';
+options.MaxFunctionEvaluations = 1e4;
+options.MaxIterations = 1000;
+
+x0 = [r0; v0; m0];
+
+zeroedFcn = @(x) shootingFcn(x,x0,t0,rf,vf,GM,Tmax,Isp);
+
+[Z,fval] = fsolve(@(x) shootingFcn(x,x0,t0,rf,vf,GM,Tmax,Isp),Lambda0_guess,options);
+[nope, SOL] = shootingFcn(Z,x0,t0,rf,vf,GM,Tmax,Isp);
+
+% Plot powered orbit of S/C transfer
+plot3(SOL.y(1,:),SOL.y(2,:),SOL.y(3,:))
+axis equal
+grid on
+
+% Plot lambdaM (should always be >0 for time-optimal problems)
+figure()
+grid on
+plot(SOL.x,SOL.y(14,:))
+
+% Plot control action
+figure()
+u=zeros(size(SOL.x));
+for j = 1:length(SOL.x)
+    m = SOL.y(7,j);
+    LambdaV = SOL.y(11:13,j);
+    LambdaM = SOL.y(14,j);
+    [ui,sti] = controlLaw(LambdaV,LambdaM,Isp,m);
+    u(j)=norm(ui);
+end
+
+plot(SOL.x,u)
+axis padded
+grid on
 
 %% Functions
 
@@ -277,9 +336,11 @@ ceq = [c1; c2;];
 c = ToF;
 end
 
-function STM = stateTransitionMatrix(t0,t,x0,mu)
+function STM = stateTransitionMatrix(t0,x0,t,mu)
 %STM Summary of this function goes here
 %   Detailed explanation goes here
+
+stateLength = length(x0);
 
 function dy = stmDynamics(t,Y)
     X = Y(1:6);
@@ -296,22 +357,167 @@ function dy = stmDynamics(t,Y)
         3*mu/r^5*subMatrix-mu/r^3*eye(3) zeros(3)];
     
     dX = twobodyode(t,X,mu);
-    PHIvec = Y(7:42);
-    PHI = reshape(PHIvec,[6 6]);
+    PHIvec = Y(stateLength+1:stateLength+stateLength^2);
+    PHI = reshape(PHIvec,[stateLength stateLength]);
     dPHI = A*PHI;
     dPHIvec = dPHI(:);
     dy = [dX; dPHIvec];
 end
 
-STM0 = eye(6);
+STM0 = eye(stateLength);
 y0 = [x0;STM0(:)];
 opts = odeset('Reltol',1e-13,'AbsTol',1e-14);
 
 sol = ode113(@stmDynamics,[t0 t],y0,opts);
 endState = sol.y(:,end);
-STMvec = endState(7:42);
-STM = reshape(STMvec,[6 6]);
+STMvec = endState(stateLength+1:stateLength+stateLength^2);
+STM = reshape(STMvec,[stateLength stateLength]);
 
 end
 
-% function dX = EOM(t,X,u,
+function [eqConstr, sol] = shootingFcn(unknown,x0,t0,rf,vf,mu,Tmax,Isp)
+%SHOOTINGFCN    shooting function for the Time optimal TPBVP for continous
+%               thrust guidance
+% 
+% INPUT:
+%   unknown[8x1]    unknowns of the problem
+%                       |-> Costate initial value Lambda0
+%                       |-> final time tf
+% 
+%   x0[7x1]         initial state of the S/C
+%   rf[3x1]         target position
+%   vf[3x1]         target velocity
+%   mu[1]           gravitational parameter of the primary
+%   Tmax[1]         maximum thrust of the S/C
+%   Isp[1]          specific impulse of the S/C
+% 
+% OUTPUT:
+%   eqConstr[8x1]   constraint values
+
+Lambda0 = unknown(1:7);
+tf = unknown(8);
+g0 = 9.80665;
+
+% Integrate dynamics
+Y0 = [x0; Lambda0];
+SOL = ode113(@(t,Y) TPBVP_2BP(t,Y,mu,Tmax,Isp),[t0 tf],Y0);
+
+% Retrieve the solution at final time
+YF=SOL.y(:,end);
+XF = YF(1:7);
+LambdaF = YF(8:14);
+
+r = XF(1:3);     LambdaR = LambdaF(1:3);
+v = XF(4:6);     LambdaV = LambdaF(4:6);
+m = XF(7);       LambdaM = LambdaF(7);
+
+% Compute the Hamiltonian at final time
+[u,St] = controlLaw(LambdaV,LambdaM,Isp,m);
+Hf = 1 + dot(LambdaR,v) - mu/norm(r)^3*dot(LambdaV,r) +...
+        + Tmax*norm(u)*St/Isp/g0;
+
+% Compute the constraints to be zeroed
+errorH = Hf;
+errorPosition = XF(1:3) - rf;
+errorVelocity = XF(4:6) - vf;
+
+eqConstr = [errorPosition; errorVelocity; LambdaM; errorH];
+
+% Output solution of ODE if requested
+% if nargout>2
+    sol = SOL;
+% end
+
+end
+
+function dY = TPBVP_2BP(t,Y,mu,Tmax,Isp)
+%TPBVP_2BP  Two point BVP differential equations for the Low Thrust
+%           controlled S/C problem
+% 
+% PROTOTYPE:
+%   dY = TPBVP_2BP(Y,mu,Tmax,Isp)
+% 
+% INPUT:
+%   Y[14x1]     S/C state and costate 
+%   mu[1]       gravitational constant of the primary
+%   Tmax[1]     maximum thrust of the S/C
+%   Isp[1]      specific impulse of the S/C
+% 
+% OUTPUT:
+%   dY[14x1]    dynamics of S/C state and of the costate
+
+% Extract the state and costate
+X = Y(1:7);
+Lambda = Y(8:14);
+
+r = X(1:3);     LambdaR = Lambda(1:3);
+v = X(4:6);     LambdaV = Lambda(4:6);
+m = X(7);       LambdaM = Lambda(7);
+
+[u,~] = controlLaw(LambdaV,LambdaM,Isp,m);
+
+% Compute the derivatives of the S/C state
+dX = EOM(t,X,u,mu,Tmax,Isp);
+
+% Compute derivatives of the costate vector
+dLambdaR = -3*mu/norm(r)^5*dot(r,LambdaV)*r + mu/norm(r)^3*LambdaV;
+dLambdaV = -LambdaR;
+dLambdaM = -norm(u)*norm(LambdaV)*Tmax/m^2;
+
+% Output the derivative of the state and costate
+dY = [dX; dLambdaR; dLambdaV; dLambdaM];
+end
+
+function [u,St] = controlLaw(LambdaV,LambdaM,Isp,m)
+% Generate the control input magnitude and direction
+alfa = - LambdaV/norm(LambdaV);         % Primer vector
+g0 = 9.80665;
+
+% Switching function computation
+St = - norm(LambdaV)*Isp*g0/m - norm(LambdaM);
+
+if St >= 0
+    uMag = 0;
+else
+    uMag = 1;
+end
+
+% Compute the CONTROL VECTOR
+u = alfa*uMag;
+
+end
+
+function dX = EOM(t,X,u,mu,Tmax,Isp)
+%EOM equations of motion for the controlled 2BP
+% 
+% PROTOTYPE:
+%   dX = EOM(t,X,u,params)
+% 
+% INPUT:
+%   t[1]    time instant
+%   X[7x1]  state vector [r(3); v(3); m(1)]'
+%   u[3x1]  control vector
+%   mu[1]   gravitational constant of the primary
+%   Tmax[1] maximum thrust of the S/C
+%   Isp[1]  specific impulse of the S/C
+% 
+% OUTPUT:
+%   dX[7x1] derivative of the state
+
+% Define standard gravitational acceleratio
+g0 = 9.80665;       % IMPROVEMENT: RETRIEVE FROM SPICE
+
+% extract the state parameters
+r = X(1:3);
+v = X(4:6);
+m = X(7);
+
+% Thrust pointing unitary vector
+alfa = u/norm(u);
+
+dr = v;
+dv = -mu/norm(r)^3*r + norm(u)*Tmax/m*alfa;
+dm = -norm(u)*Tmax/(Isp*g0);
+
+dX = [dr; dv; dm];
+end
