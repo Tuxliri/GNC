@@ -8,7 +8,7 @@ clearvars; close all; clc
 % Load kernels
 cspice_furnsh('assignment01.tm');
 
-% #1 PROPAGATOR VALIDATION
+% #1 PROPAGATOR VALIDATION --- OK!
 primary.label = 'Earth';
 primary.GM = cspice_bodvrd(primary.label,'GM',1);   % Gravitational param
                                                     %   [km^3/s^2]
@@ -25,7 +25,7 @@ T = 2*pi*sqrt(a^3/primary.GM);       % Period                            [ s ]
 x0 = [r0;v0];
 t0 = 0;
 
-xend = flow2BP(x0,t0,T,primary.GM);
+xend = flow2BP(t0,x0,T,primary.GM);
 
 % If xend==x0 after one period our propagator is working correctly
 norm(xend-x0);
@@ -36,14 +36,14 @@ dv0 = [0.5 0 0]';
 
 % Perturbed state vector
 dx0 = [dr0; dv0];
-t=0.1;
+t=100;
 
 % STM has been validated already
-dxend = flow2BP(x0+dx0,t0,t,primary.GM) - xend;
-% STM = stateTransitionMatrix(t0,t,x0,primary.GM);
-% dxend1 = STM*dx0;
+dxend = flow2BP(t0,x0+dx0,t,primary.GM) - xend;
+STM = stateTransitionMatrix(t0,x0,t,primary.GM);
+dxend1 = STM*dx0;
 
-%% #2 LAMBERT PROBLEM SHOOTING SOLVER
+% #2 LAMBERT PROBLEM SHOOTING SOLVER
 % VALIDATE WITH EXAMPLE 8.8 of Curtis
 
 % Primary parameters
@@ -69,15 +69,11 @@ r1 = cspice_spkpos(departure.Label,departure.time,frame,'NONE',primary.label);
 % Final position vector [km]
 r2 = cspice_spkpos(arrival.Label,arrival.time,frame,'NONE',primary.label);      
 
-% TEST
-% r1=[1.0499e8;1.0465e8;716.93];
-% r2 = [-2.0858e7;-2.1842e8;4.06244e6];
-
 % Initial guess as Hohmann transfer velocity
 E2M.objective = @(x) objectiveFun(x,departure.time,ToF,primary.GM,r2,r1);
 
 % problem.x0 = [sqrt(primary.GM*(2/norm(r1) - 2/(norm(r1)+norm(r2))));0; 0];
-E2M.x0 = [-24.429;21.782;0.9481];
+E2M.x0 = [-24.429; 21.782;0.9481];
 E2M.solver = 'fsolve';
 
 % Set options for using finite difference method
@@ -99,7 +95,7 @@ E2M.options = optsJacobian;
 
 sol2 = fsolve(E2M);
 
-%% #3 delta_v minimizer
+% #3 delta_v minimizer
 departure.Label = 'Earth';
 arrival.Label = 'Mars';
 departure.lb = cspice_str2et('2022-Jan-1 00:00:00.0000 TDB');
@@ -113,8 +109,10 @@ arrival.lb = departure.lb + minToF;
 arrival.ub = departure.ub + maxToF;
 
 % Define inital guess for the state (from computing DV grid) 
-stateDep = cspice_spkezr(departure.Label,7511*24*3600,frame,'NONE',primary.label);
-y0 = [stateDep; 7511*24*3600; 7716*24*3600];
+departureguess = cspice_str2et('2022-Sep-1 00:00:00.0000 TDB');
+
+stateDep = cspice_spkezr(departure.Label,departureguess,frame,'NONE',primary.label);
+y0 = [stateDep; departureguess; departureguess+minToF*24*3600];
 
 % Define optimization problem structure
 E2M.objective = @(y) costFcn(y,departure,arrival,primary,frame); 
@@ -129,15 +127,22 @@ opts = optimoptions('fmincon');
 opts.ConstraintTolerance = 1;
 opts.Display = 'iter';
 opts.PlotFcn = 'optimplotfval';
-% opts.MaxFunctionEvaluations = 1000;
+
 E2M.options = opts;
 
-% Compute solution
+% Compute solution (why doesn't it output the minimum DeltaV found??)
 [sol,DeltaV,~,output,lambda,gradient,H] = fmincon(E2M);
 
 cspice_kclear();
+%% Ex 2
+clearvars; close all; clc
 
-%% Ex 2 (pretty okay)
+% Load kernels
+cspice_furnsh('assignment01.tm');
+
+frame = 'J2000';
+
+%% Ex 3 (pretty okay)
 clearvars; close all; clc
 
 % Load kernels
@@ -197,8 +202,41 @@ axis padded
 grid on
 
 %% Functions
+function dy = twobodyode(~,y,mu)
+%TWOBODYODE Restricted two body problem ODE function
+% 
+% PROTOTYPE:
+%   dy = twobodyode(t,y)
+% 
+% INPUT:
+%   t[1]       Time                                             [T]
+%   y[6x1]     State of the system [r v]
+%              (position and velocity vectors)                  [L, L/T]
+%   mu[1]      Planetary constant
+%
+% OUTPUT:
+%   dy[6x1]         Derivative of the state [L, L/T]
+%
+% CONTRIBUTORS:
+%   Davide Iafrate
+%
+% VERSIONS
+%   2020-09-24: First version
+%
 
-function xt = flow2BP(x0,t0,t,mu,posOutOnly)
+% Calculate radius
+r = norm(y(1:3));
+
+% Set the derivatives of the state
+dy = [ y(4); 
+       y(5); 
+       y(6);
+        - mu*y(1)/r^3;
+        - mu*y(2)/r^3;
+        - mu*y(3)/r^3; ];
+end
+
+function xt = flow2BP(t0,x0,t,mu,posOutOnly)
 %FLOW2BP Restricted two body problem flow function
 % 
 % PROTOTYPE:
@@ -243,52 +281,18 @@ end
 end
 
 function [g,J] = objectiveFun(vi,t1,ToF,mu,r2,r1)
-    g = flow2BP([r1; vi],t1,ToF,mu,1) - r2;
+    g = flow2BP(t1,[r1; vi],t1+ToF,mu,1) - r2;
   
     % Use this to check if the jacobian is correct
 %     https://www.mathworks.com/help/releases/R2021a/optim/ug/checking-validity-of-gradients-or-jacobians.html
     if nargout > 1
           x0 = [r1;vi];
-          STM = stateTransitionMatrix(t1,t1+ToF,x0,mu);
+          STM = stateTransitionMatrix(t1,x0,t1+ToF,mu);
           PHIrv = STM(1:3,4:6);
           
           J = PHIrv;
     
     end
-end
-
-function dy = twobodyode(~,y,mu)
-%TWOBODYODE Restricted two body problem ODE function
-% 
-% PROTOTYPE:
-%   dy = twobodyode(t,y)
-% 
-% INPUT:
-%   t[1]       Time                                             [T]
-%   y[6x1]     State of the system [r v]
-%              (position and velocity vectors)                  [L, L/T]
-%   mu[1]      Planetary constant
-%
-% OUTPUT:
-%   dy[6x1]         Derivative of the state [L, L/T]
-%
-% CONTRIBUTORS:
-%   Davide Iafrate
-%
-% VERSIONS
-%   2020-09-24: First version
-%
-
-% Calculate radius
-r = norm(y(1:3));
-
-% Set the derivatives of the state
-dy = [ y(4); 
-       y(5); 
-       y(6);
-        - mu*y(1)/r^3;
-        - mu*y(2)/r^3;
-        - mu*y(3)/r^3; ];
 end
 
 function DV = costFcn(y,departureObj,arrivalObj,primary,frame)
@@ -297,10 +301,14 @@ function DV = costFcn(y,departureObj,arrivalObj,primary,frame)
 
 r1 = y(1:3);
 v1 = y(4:6);
+
+x1 = [r1; v1];
+
 t1 = y(7);
 t2 = y(8);
 
-x2 = flow2BP([r1; v1],t1,t2,primary.GM,0);
+x2 = flow2BP(t1,x1,t2,primary.GM);
+
 v2 = x2(4:6);
 
 stateDep = cspice_spkezr(departureObj.Label,t1,frame,'NONE',primary.label);
@@ -309,22 +317,23 @@ stateArrival = cspice_spkezr(arrivalObj.Label,t2,frame,'NONE',primary.label);
 vDep = stateDep(4:6);
 vArr = stateArrival(4:6);
 
-dv1 = v1 - vDep;
-dv2 = v2 - vArr;
-DV = norm(dv1) + norm(dv2);
+dv1 = norm(v1 - vDep);
+dv2 = norm(v2 - vArr);
+DV = dv1 + dv2;
 end
 
 function [c, ceq] = enforcePositions(y,departureObj,arrivalObj,primary,frame)
 % How can I avoid computing the flow AGAIN?
 r1 = y(1:3);
 v1 = y(4:6);
+
 t1 = y(7);
 t2 = y(8);
 
 radiusDep = cspice_spkpos(departureObj.Label,t1,frame,'NONE',primary.label);
 radiusArrival = cspice_spkpos(arrivalObj.Label,t2,frame,'NONE',primary.label);
 
-x2 = flow2BP([r1; v1],t1,t2,primary.GM);
+x2 = flow2BP(t1,[r1; v1],t2,primary.GM);
 r2 = x2(1:3);
 
 % Compute constraint violations
@@ -332,7 +341,7 @@ c1 = norm(r1-radiusDep);
 c2 = norm(r2-radiusArrival);
 ToF = t2-t1;
 
-ceq = [c1; c2;];
+ceq = [c1; c2];
 c = ToF;
 end
 
@@ -520,4 +529,173 @@ dv = -mu/norm(r)^3*r + norm(u)*Tmax/m*alfa;
 dm = -norm(u)*Tmax/(Isp*g0);
 
 dX = [dr; dv; dm];
+end
+
+function [bodies] = nbody_init(labels)
+%NBODY_INIT Initialize planetary data for n-body propagation
+%   Given a set of labels of planets and/or barycentres, returns a
+%   cell array populated with structures containing the body label and the
+%   associated gravitational constant.
+%
+%
+% Author
+%   Name: ALESSANDRO 
+%   Surname: MORSELLI
+%   Research group: DART
+%   Department: DAER
+%   University: Politecnico di Milano 
+%   Creation: 26/09/2021
+%   Contact: alessandro.morselli@polimi.it
+%   Copyright: (c) 2021 A. Morselli, Politecnico di Milano. 
+%                  All rights reserved.
+%
+%
+% Notes:
+%   This material was prepared to support the course 'Satellite Guidance
+%   and Navigation', AY 2021/2022.
+%
+%
+% Inputs:
+%   labels : [1,n] cell-array with object labels
+%
+% Outputs:
+%   bodies : [1,n] cell-array with struct elements containing the following
+%                  fields
+%                  |
+%                  |--bodies{i}.name -> body label
+%                  |--bodies{i}.GM   -> gravitational constant [km**3/s**2]
+%
+%
+% Prerequisites:
+%   - MICE (Matlab SPICE)
+%   - Populated kernel pool (PCK kernels)
+%
+
+% Initialize output
+bodies = cell(size(labels));
+
+% Loop over labels
+for i = 1:length(labels)
+    % Store body label
+    bodies{i}.name = labels{i};
+    % Store body gravitational constant
+    bodies{i}.GM   = cspice_bodvrd(labels{i}, 'GM', 1);
+end
+
+end
+
+function [dxdt] = nbody_rhs(t, x, bodies, frame)
+%NBODY_RHS Evaluates the right-hand-side of a N-body propagator
+%   Evaluates the right-hand-side of a newtonian N-body propagator.
+%   The integration centre is the Solar-System-Barycentre (SSB) and only
+%   Newtonian gravitational accelerations are considered.
+%
+%
+% Author
+%   Name: ALESSANDRO 
+%   Surname: MORSELLI
+%   Research group: DART
+%   Department: DAER
+%   University: Politecnico di Milano 
+%   Creation: 26/09/2021
+%   Contact: alessandro.morselli@polimi.it
+%   Copyright: (c) 2021 A. Morselli, Politecnico di Milano. 
+%                  All rights reserved.
+%
+%
+% Notes:
+%   This material was prepared to support the course 'Satellite Guidance
+%   and Navigation', AY 2021/2022.
+%
+%
+% Inputs:
+%   t      : [1,1] ephemeris time (ET SPICE), seconds past J2000 (TDB)
+%   x      : [6,1] cartesian state vector wrt Solar-System-Barycentre
+%   bodies : [1,6] cell-array created with function nbody_init
+%
+% Outputs:
+%   dxdt   : [6,1] RHS, newtonian gravitational acceleration only
+%
+% Prerequisites:
+%   - MICE (Matlab SPICE)
+%   - Populated kernel pool (SPK, LSK, PCK kernels)
+%
+
+if not( strcmpi(frame, 'ECLIPJ2000') || strcmpi(frame, 'J2000') )
+    msg = 'Invalid integration reference frame, select either J2000 or ECLIPJ2000';
+    error(msg);
+end
+
+% Initialize right-hand-side
+dxdt = zeros(6,1);
+
+% Position detivative is object's velocity
+dxdt(1:3) = x(4:6);
+
+% Extract the object position from state x
+rr_ssb_obj = x(1:3);
+
+for i=1:length(bodies)
+
+    % Retrieve position and velocity of i-th celestial body wrt Earth
+    % System Barycentre in inertial frame
+    rv_es_body = cspice_spkezr(bodies{i}.name, t, frame, 'NONE', 'EARTH');
+
+    % Extract object position wrt. i-th celestial body
+    rr_body_obj = rr_ssb_obj - rv_es_body(1:3);
+
+    % Compute square distance and distance
+    dist2 = dot(rr_body_obj, rr_body_obj);
+    dist = sqrt(dist2);
+
+    % Compute the gravitational acceleration using Newton's law
+    aa_grav =  - bodies{i}.GM * rr_body_obj /(dist*dist2);
+
+    % Sum up acceleration to right-hand-side
+    dxdt(4:6) = dxdt(4:6) + aa_grav;
+
+end
+
+end
+
+function xt = flowNBP(t0,x0,t,bodies,frame,posOutOnly)
+%FLOWNBP Restricted N body problem flow function
+% 
+% PROTOTYPE:
+%   xt=flow2BP(x0,t0,t,mu)
+% 
+% INPUT:
+%   x0[6x1]     Initial state of the system
+%   t0[1]       Initial time
+%   t[1]        Final time                                           
+%   y[6x1]      State of the system [r v]
+%               (position and velocity vectors)                  
+%   mu[1]       Planetary constant
+%
+% OUTPUT:
+%   xt[6x1]         Final state
+%
+% CONTRIBUTORS:
+%   Davide Iafrate
+%
+% VERSIONS
+%   2020-09-24: First version
+%
+
+tspan = [t0 t];
+
+options = odeset('reltol', 1e-12, 'abstol', 1e-12);
+[tt, xx] = ode113(@(t,x) nbody_rhs(t,x,bodies,frame), tspan, x0, options);
+
+
+if nargin > 5
+    if posOutOnly == 1
+        xt = xx(end,1:3)';
+    else
+        xt = xx(end,:)';
+    end
+else
+    xt = xx(end,:)';
+end
+
 end
