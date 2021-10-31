@@ -44,7 +44,6 @@ STM = stateTransitionMatrix(t0,x0,t,primary.GM);
 dxend1 = STM*dx0;
 
 % #2 LAMBERT PROBLEM SHOOTING SOLVER
-% VALIDATE WITH EXAMPLE 8.8 of Curtis
 
 % Primary parameters
 primary.label = 'Sun';
@@ -69,11 +68,13 @@ r1 = cspice_spkpos(departure.Label,departure.time,frame,'NONE',primary.label);
 % Final position vector [km]
 r2 = cspice_spkpos(arrival.Label,arrival.time,frame,'NONE',primary.label);      
 
+% r1 = [7000.0;   0.0;    1.0];
+% r2 = [200;  7000;   -100];
 % Initial guess as Hohmann transfer velocity
 E2M.objective = @(x) objectiveFun(x,departure.time,ToF,primary.GM,r2,r1);
 
 % problem.x0 = [sqrt(primary.GM*(2/norm(r1) - 2/(norm(r1)+norm(r2))));0; 0];
-E2M.x0 = [-24.429; 21.782;0.9481];
+E2M.x0 = [-25; 20; .0];
 E2M.solver = 'fsolve';
 
 % Set options for using finite difference method
@@ -115,34 +116,96 @@ stateDep = cspice_spkezr(departure.Label,departureguess,frame,'NONE',primary.lab
 y0 = [stateDep; departureguess; departureguess+minToF*24*3600];
 
 % Define optimization problem structure
-E2M.objective = @(y) costFcn(y,departure,arrival,primary,frame); 
-E2M.x0 = y0; % Initial guess for the state
-E2M.lb = [-Inf*ones(6,1); departure.lb; arrival.lb];
-E2M.ub = [+Inf*ones(6,1); departure.ub; arrival.ub];
-E2M.nonlcon = @(y) enforcePositions(y,departure,arrival,primary,frame);
-E2M.solver='fmincon';
+E2MT.objective = @(y) costFcn(y,departure,arrival,primary,frame); 
+E2MT.x0 = y0; % Initial guess for the state
+E2MT.lb = [-Inf*ones(6,1); departure.lb; arrival.lb];
+E2MT.ub = [+Inf*ones(6,1); departure.ub; arrival.ub];
+E2MT.nonlcon = @(y) enforcePositions(y,departure,arrival,primary,frame);
+E2MT.solver='fmincon';
 
 % Define and set options
 opts = optimoptions('fmincon');
 opts.ConstraintTolerance = 1;
 opts.Display = 'iter';
 opts.PlotFcn = 'optimplotfval';
+otps.Algorithm = 'sqp';
 
-E2M.options = opts;
+E2MT.options = opts;
 
 % Compute solution (why doesn't it output the minimum DeltaV found??)
-[sol,DeltaV,~,output,lambda,gradient,H] = fmincon(E2M);
+[sol,DeltaV,~,output,lambda,gradient,H] = fmincon(E2MT);
 
 cspice_kclear();
+
 %% Ex 2
 clearvars; close all; clc
 
 % Load kernels
 cspice_furnsh('assignment01.tm');
 
+% Define list of celestial bodies:
+labels = {'Sun';
+          'Earth';
+          'Moon'};
+
+% Initialize propagation data
+bodies = nbody_init(labels);
+
+% select integration frame string (SPICE naming convention)
 frame = 'J2000';
 
-%% Ex 3 (pretty okay)
+% Initial guess definition (use 2BP bielliptic transfer as reference)
+opts = odeset('reltol', 1e-12, 'abstol', 1e-12);
+
+GM = 398600;
+a1 = (200 + 500000 + 6378)/2;
+a2 = (500e3 + (378+60)*1e3 )/2;
+
+T1 = 2*pi*sqrt(a1^3/GM);
+T2 = 2*pi*sqrt(a2^3/GM);
+
+ri = [1;0;0]*(6378+200);
+vi = sqrt(2*GM/norm(ri) - GM/a1)*[0;1;0];
+t0 = 0;
+
+xi = [ri; vi];
+[tt,xx] = ode113(@twobodyode,[t0 T1/2],xi,opts,GM);
+xf = xx(end,:)';
+v2 = sqrt(2*GM/norm(xf(1:3)) - GM/a2)*[0; -1; 0];
+xi2 = [xf(1:3); v2];
+[tt1,xx1] = ode113(@twobodyode,[t0 T2/2],xi2,opts,GM);
+
+Npoints = length(tt);
+Npoints1 = length(tt1);
+
+y0 = [xi; xx(round(Npoints/2),:)'; xx1(1,:)'; xx(round(Npoints1/2),:)'; t0; t0+T1/2; t0+T1/2+T2/2 ];
+
+figure()
+hold on
+plot3(xx(:,1),xx(:,2),xx(:,3))
+hold on
+plot3(xx1(:,1),xx1(:,2),xx1(:,3))
+axis equal
+
+% Create problem structure
+test = totalDV(y0,bodies)
+L2.objective = @(y) totalDV(y,bodies);
+L2.x0 = y0;
+L2.nonlcon = @(y) constraints(y,bodies);
+L2.solver = 'fmincon';
+
+% Define and set options
+opts = optimoptions('fmincon');
+opts.ConstraintTolerance = 1;
+opts.Display = 'iter';
+opts.PlotFcn = 'optimplotfval';
+opts.Algorithm = 'sqp';
+L2.options = opts;
+
+[sol,DeltaV,~,output,lambda,gradient,H] = fmincon(L2);
+
+cspice_kclear();
+%% Ex 3 (check the measurement units)
 clearvars; close all; clc
 
 % Load kernels
@@ -156,22 +219,24 @@ rf = [0 -29617.43 0]';
 vf = [1.8371 0.0002 3.1755]';
 
 % Define S/C parameters
-Tmax = 1000e-3;
+Tmax = 300*1e-6;
 Isp = 3000;
 t0 = 0;
 GM = 398600;
+epsilon0 = 0.5*norm(v0)^2 - GM/norm(r0);
+semiMajorAxis = - GM/(2*epsilon0);
+T = 2*pi*sqrt(semiMajorAxis^3/GM);
 
+DAY2SECS = 24*60*60;
 % Initial guess for the unknown
-Lambda0_guess = [.1 .1 .1 .1 .1 .1 .1 10000]';
+% Lambda0_guess = [.1 .1 .1 .1 .1 .1 .1 1e4]'; %(Wrong time)?
+Lambda0_guess = [ 5 5 5 1e4 1e4 1e4 1 T/DAY2SECS]';  % By professor
 options = optimoptions('fsolve');
-options.Display='iter';
-options.FiniteDifferenceType = 'central';
-options.MaxFunctionEvaluations = 1e4;
-options.MaxIterations = 1000;
+options.Display = 'iter';
+options.MaxFunctionEvaluations = 3000;
+options.MaxIterations = 500;
 
 x0 = [r0; v0; m0];
-
-zeroedFcn = @(x) shootingFcn(x,x0,t0,rf,vf,GM,Tmax,Isp);
 
 [Z,fval] = fsolve(@(x) shootingFcn(x,x0,t0,rf,vf,GM,Tmax,Isp),Lambda0_guess,options);
 [nope, SOL] = shootingFcn(Z,x0,t0,rf,vf,GM,Tmax,Isp);
@@ -189,16 +254,18 @@ plot(SOL.x,SOL.y(14,:))
 % Plot control action
 figure()
 u=zeros(size(SOL.x));
+st=u;
 for j = 1:length(SOL.x)
     m = SOL.y(7,j);
     LambdaV = SOL.y(11:13,j);
     LambdaM = SOL.y(14,j);
-    [ui,sti] = controlLaw(LambdaV,LambdaM,Isp,m);
-    u(j)=norm(ui);
+    [ui,sti] = thrustMagRatio(LambdaV,LambdaM,Isp,m);
+    u(j)=ui;
+    st(j)=sti;
 end
 
 plot(SOL.x,u)
-axis padded
+axis equal
 grid on
 
 %% Functions
@@ -263,7 +330,7 @@ function xt = flow2BP(t0,x0,t,mu,posOutOnly)
 tspan = [t0 t];
 
 % Set options for ODE solver
-opts = odeset('Reltol',1e-13,'AbsTol',1e-14,'Stats','off');
+opts = odeset('reltol', 1e-12, 'abstol', 1e-12);
 
 % Solve the ode
 [~,xx] = ode113(@twobodyode,tspan,x0,opts,mu);
@@ -402,14 +469,17 @@ function [eqConstr, sol] = shootingFcn(unknown,x0,t0,rf,vf,mu,Tmax,Isp)
 % 
 % OUTPUT:
 %   eqConstr[8x1]   constraint values
-
+DAY2SECS = 24*60*60;
 Lambda0 = unknown(1:7);
-tf = unknown(8);
-g0 = 9.80665;
+tf = unknown(8);            % IN DAYS!
+tf = tf*DAY2SECS;
+g0 = 9.80665*1e-3;
 
 % Integrate dynamics
 Y0 = [x0; Lambda0];
-SOL = ode113(@(t,Y) TPBVP_2BP(t,Y,mu,Tmax,Isp),[t0 tf],Y0);
+options = odeset('reltol', 3e-14, 'abstol', 1e-14);
+
+SOL = ode113(@(t,Y) TPBVP_2BP(t,Y,mu,Tmax,Isp),[t0 tf],Y0,options);
 
 % Retrieve the solution at final time
 YF=SOL.y(:,end);
@@ -421,16 +491,16 @@ v = XF(4:6);     LambdaV = LambdaF(4:6);
 m = XF(7);       LambdaM = LambdaF(7);
 
 % Compute the Hamiltonian at final time
-[u,St] = controlLaw(LambdaV,LambdaM,Isp,m);
+[u,St] = thrustMagRatio(LambdaV,LambdaM,Isp,m);
 Hf = 1 + dot(LambdaR,v) - mu/norm(r)^3*dot(LambdaV,r) +...
-        + Tmax*norm(u)*St/Isp/g0;
+        + Tmax*u*St/Isp/g0;
 
 % Compute the constraints to be zeroed
 errorH = Hf;
 errorPosition = XF(1:3) - rf;
 errorVelocity = XF(4:6) - vf;
 
-eqConstr = [errorPosition; errorVelocity; LambdaM; errorH];
+eqConstr = [errorPosition; errorVelocity; LambdaM*1000; errorH];
 
 % Output solution of ODE if requested
 % if nargout>2
@@ -463,58 +533,58 @@ r = X(1:3);     LambdaR = Lambda(1:3);
 v = X(4:6);     LambdaV = Lambda(4:6);
 m = X(7);       LambdaM = Lambda(7);
 
-[u,~] = controlLaw(LambdaV,LambdaM,Isp,m);
+[u,~] = thrustMagRatio(LambdaV,LambdaM,Isp,m);
+
+% Compute the unitary PRIMER VECTOR
+alfa = - LambdaV/norm(LambdaV);
 
 % Compute the derivatives of the S/C state
-dX = EOM(t,X,u,mu,Tmax,Isp);
+dX = EOM(t,X,u,alfa,mu,Tmax,Isp);
 
 % Compute derivatives of the costate vector
 dLambdaR = -3*mu/norm(r)^5*dot(r,LambdaV)*r + mu/norm(r)^3*LambdaV;
 dLambdaV = -LambdaR;
-dLambdaM = -norm(u)*norm(LambdaV)*Tmax/m^2;
+dLambdaM = -u*norm(LambdaV)*Tmax/m^2;
 
 % Output the derivative of the state and costate
 dY = [dX; dLambdaR; dLambdaV; dLambdaM];
 end
 
-function [u,St] = controlLaw(LambdaV,LambdaM,Isp,m)
+function [u,St] = thrustMagRatio(LambdaV,LambdaM,Isp,m)
 % Generate the control input magnitude and direction
-alfa = - LambdaV/norm(LambdaV);         % Primer vector
-g0 = 9.80665;
+g0 = 9.80665*1e-3;  % [km/s^2]
 
 % Switching function computation
 St = - norm(LambdaV)*Isp*g0/m - norm(LambdaM);
 
 if St >= 0
-    uMag = 0;
+    u = 0;
 else
-    uMag = 1;
+    u = 1;
 end
-
-% Compute the CONTROL VECTOR
-u = alfa*uMag;
 
 end
 
-function dX = EOM(t,X,u,mu,Tmax,Isp)
+function dX = EOM(t,X,u,alfa,mu,Tmax,Isp)
 %EOM equations of motion for the controlled 2BP
 % 
 % PROTOTYPE:
 %   dX = EOM(t,X,u,params)
 % 
 % INPUT:
-%   t[1]    time instant
-%   X[7x1]  state vector [r(3); v(3); m(1)]'
-%   u[3x1]  control vector
-%   mu[1]   gravitational constant of the primary
-%   Tmax[1] maximum thrust of the S/C
-%   Isp[1]  specific impulse of the S/C
+%   t[1]        time instant
+%   X[7x1]      state vector [r(3); v(3); m(1)]'
+%   u[1x1]      thrust magnitude control
+%   alfa[3x1]   unit vector of thrust direction 
+%   mu[1]       gravitational constant of the primary
+%   Tmax[1]     maximum thrust of the S/C
+%   Isp[1]      specific impulse of the S/C
 % 
 % OUTPUT:
 %   dX[7x1] derivative of the state
 
 % Define standard gravitational acceleratio
-g0 = 9.80665;       % IMPROVEMENT: RETRIEVE FROM SPICE
+g0 = 9.80665*1e-3;       % [km/s^2] IMPROVEMENT: RETRIEVE FROM SPICE
 
 % extract the state parameters
 r = X(1:3);
@@ -522,10 +592,9 @@ v = X(4:6);
 m = X(7);
 
 % Thrust pointing unitary vector
-alfa = u/norm(u);
 
 dr = v;
-dv = -mu/norm(r)^3*r + norm(u)*Tmax/m*alfa;
+dv = -mu/norm(r)^3*r + u*Tmax/m*alfa;      % Convert thrust term to km/s^2
 dm = -norm(u)*Tmax/(Isp*g0);
 
 dX = [dr; dv; dm];
@@ -610,7 +679,7 @@ function [dxdt] = nbody_rhs(t, x, bodies, frame)
 %
 % Inputs:
 %   t      : [1,1] ephemeris time (ET SPICE), seconds past J2000 (TDB)
-%   x      : [6,1] cartesian state vector wrt Solar-System-Barycentre
+%   x      : [6,1] cartesian state vector wrt Earth-Barycentre
 %   bodies : [1,6] cell-array created with function nbody_init
 %
 % Outputs:
@@ -631,25 +700,29 @@ dxdt = zeros(6,1);
 
 % Position detivative is object's velocity
 dxdt(1:3) = x(4:6);
-
 % Extract the object position from state x
-rr_ssb_obj = x(1:3);
+rr_es_obj = x(1:3);
 
 for i=1:length(bodies)
 
     % Retrieve position and velocity of i-th celestial body wrt Earth
-    % System Barycentre in inertial frame
+    % Barycentre in an inertial frame
     rv_es_body = cspice_spkezr(bodies{i}.name, t, frame, 'NONE', 'EARTH');
-
+    
     % Extract object position wrt. i-th celestial body
-    rr_body_obj = rr_ssb_obj - rv_es_body(1:3);
-
+    dd_sc_body = rr_es_obj - rv_es_body(1:3);
+    
+    % Extract i-th body pos wrt central
+    rr_body_prim = rv_es_body(1:3);
+    rho2 = max(dot(rr_body_prim,rr_body_prim),0.01);
+    rho = sqrt(rho2);
+    
     % Compute square distance and distance
-    dist2 = dot(rr_body_obj, rr_body_obj);
+    dist2 = dot(dd_sc_body, dd_sc_body);
     dist = sqrt(dist2);
 
     % Compute the gravitational acceleration using Newton's law
-    aa_grav =  - bodies{i}.GM * rr_body_obj /(dist*dist2);
+    aa_grav =  - bodies{i}.GM * (dd_sc_body /(dist*dist2) + rr_body_prim/(rho*rho2));
 
     % Sum up acceleration to right-hand-side
     dxdt(4:6) = dxdt(4:6) + aa_grav;
@@ -698,4 +771,118 @@ else
     xt = xx(end,:)';
 end
 
+end
+
+function [c, ceq] = constraints(y,bodies)
+%CONSTRAINTS function producing the equality constraints and the
+%inequality constraints vectors
+% 
+% INPUT:
+%   y[29x1] :       state vector of optimization variables
+%   bodies[1,6] :   cell-array created with function nbody_init
+% 
+% OUTPUT:
+%   c[4x1]  :       nonlinear inequality constraints
+%   ceq[7x1] :      nonlinear equality constraints
+
+% set reference frame
+frame = 'J2000';
+
+% Extract the state vectors
+x1 = y(1:6);    r1 = x1(1:3);   v1 = x1(4:6);
+x2 = y(7:12);   r2 = x2(1:3);   v2 = x2(4:6);
+x3 = y(13:18);  r3 = x3(1:3);   v3 = x3(4:6);
+x4 = y(19:24);  r4 = x4(1:3);   v4 = x4(4:6);
+
+% Parameters used in calculations
+muE = bodies{2}.GM;
+radiiE = cspice_bodvrd( 'EARTH', 'RADII', 3);
+R_e = radiiE(1);
+
+% Second burn time
+t3 = y(25);
+
+%First and last burn times
+t1 = y(26);     tN = y(27);
+
+% Perform time discretization of each arc in 2 segments
+N = 3;
+temp = linspace(t3,tN,N);
+t = [linspace(t1,t3,N) temp(2:end)];
+
+
+% Retrieve final orbital position of moon from ephemeris
+xMoon_f = cspice_spkezr('moon',tN,frame,'NONE','EARTH');
+
+% Find L2 final state, same velocity as the moon but radius 60000km greater
+rL2_f = xMoon_f(1:3)/norm(xMoon_f(1:3))*(norm(xMoon_f(1:3)) + 60000);
+
+% Compute the constraints
+ceq = [norm(r1) - (200+R_e);
+       norm(v1) - sqrt(muE/norm(r1));
+       dot(v1,r1);
+       flowNBP(t(1),x1,t(2),bodies,frame) - x2;
+       flowNBP(t(2),x2,t3,bodies,frame,1) - r3;
+       flowNBP(t3,x3,t(4),bodies,frame) - x4;
+       flowNBP(t(4),x4,tN,bodies,frame,1) - rL2_f];
+   
+c = [5e5 - norm(r3);
+    t3 - tN;
+    t1 - t3;
+    t3 - tN];
+
+end
+
+function [DV,DV1,DV2,DV3] = totalDV(y,bodies)
+%TOTALDV cost function computing the total DeltaV required for the three
+%maneuvers
+% 
+% INPUT:
+%   y[29x1] :       state vector of optimization variables
+%   bodies[1,6] :   cell-array created with function nbody_init
+% 
+% OUTPUT:
+%   DV[1]   :         total DeltaV required by the three maneuvers
+%   DV1[1]  :         DeltaV required by the first maneuver
+%   DV2[1]  :         DeltaV required by the second maneuver
+%   DV3[1]  :         DeltaV required by the third maneuver
+frame = 'J2000';
+% Extract the state vectors
+x1 = y(1:6);    r1 = x1(1:3);   v1 = x1(4:6);
+x2 = y(7:12);   r2 = x2(1:3);   v2 = x2(4:6);
+x3 = y(13:18);  r3 = x3(1:3);   v3 = x3(4:6);
+x4 = y(19:24);  r4 = x4(1:3);   v4 = x4(4:6);
+
+% Parameters used in calculations
+muE = bodies{2}.GM;
+
+% Second burn time
+t3 = y(25);
+
+%First and last burn times
+t1 = y(26);     tN = y(27);
+
+% Perform time discretization of each arc in 2 segments
+N = 3;
+t = [linspace(t1,t3,N) linspace(t3,tN,N)];
+
+% Retrieve final orbital position of moon from ephemeris
+xMoon_f = cspice_spkezr('moon',tN,'J2000','NONE','EARTH');
+
+% Find L2 final state, same velocity as the moon but radius 60000km greater
+vL2_f = xMoon_f(4:6);
+
+% Compute the flows
+x3f = flowNBP(t(2),x2,t3,bodies,frame);
+x5f = flowNBP(t(4),x4,tN,bodies,frame);
+
+% Compute the velocities before and after each impulse
+v0 = cross([0 0 1],r1/norm(r1))*sqrt(muE/norm(r1));
+
+% Compute the DVs
+DV1 = norm(v1 - v0);
+DV2 = norm(v3 - x3f(4:6));
+DV3 = norm(vL2_f - x5f(4:6));
+
+DV = DV1 + DV2 + DV3;
 end
