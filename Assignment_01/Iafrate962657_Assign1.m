@@ -2,13 +2,13 @@
 % Assignment # 1
 % Author: Davide Iafrate
 
-%% Ex 1
+%% Ex 1 - PRETTY OKAY
 clearvars; close all; clc
 
 % Load kernels
 cspice_furnsh('assignment01.tm');
 
-% #1 PROPAGATOR VALIDATION --- OK!
+%%%%%%%%% #1 PROPAGATOR VALIDATION --- OK! %%%%%%%%%%
 primary.label = 'Earth';
 primary.GM = cspice_bodvrd(primary.label,'GM',1);   % Gravitational param
                                                     %   [km^3/s^2]
@@ -27,54 +27,40 @@ t0 = 0;
 
 xend = flow2BP(t0,x0,T,primary.GM);
 
-% If xend==x0 after one period our propagator is working correctly
-norm(xend-x0);
+% If error = 0 after one period our propagator is working correctly
+error = norm(xend-x0);
 
-% STM Validation
-dr0 = [100 10 10]';
-dv0 = [0.5 0 0]';
-
-% Perturbed state vector
-dx0 = [dr0; dv0];
-t=100;
-
-% STM has been validated already
-dxend = flow2BP(t0,x0+dx0,t,primary.GM) - xend;
-STM = stateTransitionMatrix(t0,x0,t,primary.GM);
-dxend1 = STM*dx0;
-
-% #2 LAMBERT PROBLEM SHOOTING SOLVER
-
-% Primary parameters
-primary.label = 'Sun';
+%%%%%%%%% LAMBERT PROBLEM SHOOTING SOLVER - Validated %%%%%%%%%
+%(Earth centered solution) - Validated
+% Primary parameters 
+primary.label = 'Earth';
 primary.GM = cspice_bodvrd(primary.label,'GM',1);   % Gravitational param
                                                     
 % select frame string (SPICE naming convention)
-frame = 'ECLIPJ2000';
+frame = 'J2000';
 
-% Set departure/arrival data
+% select departure and arrival strings
 departure.EpochStr = '1996-Nov-7 00:00:00.0000 TDB';
 arrival.EpochStr = '1997-Sep-12 00:00:00.0000 TDB';
-departure.Label = 'Earth';
-arrival.Label = 'Mars';
 
+% Convert strings to J2000 times
 departure.time = cspice_str2et(departure.EpochStr);
 arrival.time = cspice_str2et(arrival.EpochStr);
 ToF = arrival.time - departure.time;
 
 % Retrieve initial and final positions of the planets
 % Initial position vector [km]
-r1 = cspice_spkpos(departure.Label,departure.time,frame,'NONE',primary.label);      
+r1 = [ 7000; 0; 1];
+v1_0 = [0; 8.5; 0];
+t1 = 0;
+ToF = 2000;
+
 % Final position vector [km]
-r2 = cspice_spkpos(arrival.Label,arrival.time,frame,'NONE',primary.label);      
+r2 = [200; 7000; -100];
 
-% r1 = [7000.0;   0.0;    1.0];
-% r2 = [200;  7000;   -100];
 % Initial guess as Hohmann transfer velocity
-E2M.objective = @(x) objectiveFun(x,departure.time,ToF,primary.GM,r2,r1);
-
-% problem.x0 = [sqrt(primary.GM*(2/norm(r1) - 2/(norm(r1)+norm(r2))));0; 0];
-E2M.x0 = [-25; 20; .0];
+E2M.objective = @(x) objectiveFun(x,0,ToF,primary.GM,r2,r1);
+E2M.x0 = v1_0;
 E2M.solver = 'fsolve';
 
 % Set options for using finite difference method
@@ -90,36 +76,97 @@ sol=fsolve(E2M);
 optsJacobian = optimoptions('fsolve');
 optsJacobian.Display='iter';
 optsJacobian.SpecifyObjectiveGradient = true;
-% optsJacobian.CheckGradients = true;  % CHECK IF THE JACOBIAN IS CORRECT
 
 E2M.options = optsJacobian;
 
 sol2 = fsolve(E2M);
 
-% #3 delta_v minimizer
+%%%%%%%%%%%% Earth-to-Mars Lambert validator - Validated %%%%%%%%%%%
+primary.label = 'Sun';
+primary.GM = cspice_bodvrd(primary.label,'GM',1);   % Gravitational param
+            
+% select frame string (SPICE naming convention)
+frame = 'ECLIPJ2000';
+% select departure and arrival strings
 departure.Label = 'Earth';
 arrival.Label = 'Mars';
-departure.lb = cspice_str2et('2022-Jan-1 00:00:00.0000 TDB');
-departure.ub = cspice_str2et('2023-Jan-1 00:00:00.0000 TDB');
-% Minimum/maximum ToF in days
-maxToF = 300*cspice_spd(); 
-minToF = 100*cspice_spd();
+
+departure.EpochStr = '1996-Jul-7 00:00:00.0000 TDB';
+arrival.EpochStr = '1996-Dec-12 00:00:00.0000 TDB';
+
+% Times
+departure.time = cspice_str2et(departure.EpochStr);
+arrival.time = cspice_str2et(arrival.EpochStr);
+ToF = arrival.time - departure.time;
+
+% Initial position vector [km]
+x1 = cspice_spkezr(departure.Label,departure.time,'J2000','NONE',primary.label);
+r1 = x1(1:3);
+v1_0 = x1(4:6);
+
+% Final position vector [km]
+r2 = cspice_spkpos(arrival.Label,arrival.time,'J2000','NONE',primary.label);      
+
+% Initial guess as Hohmann transfer velocity
+E2M.objective = @(x) objectiveFun(x,departure.time,ToF,primary.GM,r2,r1);
+E2M.x0 = v1_0;
+E2M.solver = 'fsolve';
+
+% Set options for using finite difference method
+optsFinDiff = optimoptions('fsolve');
+optsFinDiff.Display='iter';
+optsFinDiff.FiniteDifferenceType = 'central';
+
+E2M.options = optsFinDiff;
+
+sol=fsolve(E2M);
+
+[A,P,E,ERROR,VI,VF,TPAR,THETA] = lambertMR(r1, r2, ToF, primary.GM,0,0,0 );
+
+disp('The difference between the analytical lambert solver and the shooting one is:')
+norm(sol - VI)
+
+%%%%%%%%% delta_v minimizer %%%%%%%%%
+clear departure arrival
+departure.Label = 'Earth';
+arrival.Label = 'Mars';
 
 
-arrival.lb = departure.lb + minToF;
-arrival.ub = departure.ub + maxToF;
+% Time conversion constant
+DAY2SECS = 24*3600;
+
+departure.lb = cspice_str2et('2022-Jan-1 00:00:00.0000 TDB')/DAY2SECS;
+departure.ub = cspice_str2et('2023-Jan-1 00:00:00.0000 TDB')/DAY2SECS;
+
+arrival.lb = cspice_str2et('2022-Mar-1 00:00:00.0000 TDB')/DAY2SECS;
+arrival.ub = cspice_str2et('2023-Dec-31 00:00:00.0000 TDB')/DAY2SECS;
+
 
 % Define inital guess for the state (from computing DV grid) 
-departureguess = cspice_str2et('2022-Sep-1 00:00:00.0000 TDB');
+departureguess = cspice_str2et('2022-Sep-9 00:00:00.0000 TDB');
+
+minToF = 300; % minimum ToF in days
+arrivalguess = departureguess/DAY2SECS + minToF;
 
 stateDep = cspice_spkezr(departure.Label,departureguess,frame,'NONE',primary.label);
-y0 = [stateDep; departureguess; departureguess+minToF*24*3600];
+stateDep(4:6) = stateDep(4:6) + cross([0;0;1],stateDep(1:3)/norm(stateDep(1:3)))*7;
+y0 = [stateDep; departureguess/DAY2SECS; arrivalguess];
 
 % Define optimization problem structure
 E2MT.objective = @(y) costFcn(y,departure,arrival,primary,frame); 
 E2MT.x0 = y0; % Initial guess for the state
-E2MT.lb = [-Inf*ones(6,1); departure.lb; arrival.lb];
-E2MT.ub = [+Inf*ones(6,1); departure.ub; arrival.ub];
+E2MT.A = [0 0 0 0 0 0 1 -1];                    % Linear inequality constr for time
+E2MT.B = 0;
+E2MT.lb = [-5e7; -5e7; -5e4; 
+            -28; -28; -10;
+            departure.lb; 
+            arrival.lb];
+        
+E2MT.ub = [3e8; 3e8; 5e4;
+            38; 38; 10;
+            departure.ub;
+            arrival.ub];
+        
 E2MT.nonlcon = @(y) enforcePositions(y,departure,arrival,primary,frame);
 E2MT.solver='fmincon';
 
@@ -128,13 +175,24 @@ opts = optimoptions('fmincon');
 opts.ConstraintTolerance = 1;
 opts.Display = 'iter';
 opts.PlotFcn = 'optimplotfval';
-otps.Algorithm = 'sqp';
+opts.ScaleProblem = true;
 
 E2MT.options = opts;
 
 % Compute solution (why doesn't it output the minimum DeltaV found??)
 [sol,DeltaV,~,output,lambda,gradient,H] = fmincon(E2MT);
 
+% Checks
+% End state position error
+departureTime = sol(7)*DAY2SECS;
+arrivalTime = sol(8)*DAY2SECS;
+departureState = sol(1:6);
+positionError = flow2BP(departureTime,departureState,arrivalTime,primary.GM,1)...
+    - cspice_spkpos(arrival.Label,arrivalTime,frame,'NONE',primary.label)
+departureDate = cspice_et2utc(departureTime,'C',0)
+arrivalDate = cspice_et2utc(arrivalTime,'C',0)
+
+% Clear kernel pool
 cspice_kclear();
 
 %% Ex 2
@@ -154,31 +212,6 @@ bodies = nbody_init(labels);
 % select integration frame string (SPICE naming convention)
 frame = 'J2000';
 
-% Initial guess definition (use 2BP bielliptic transfer as reference)
-opts = odeset('reltol', 1e-12, 'abstol', 1e-12);
-
-GM = 398600;
-a1 = (200 + 500000 + 6378)/2;
-a2 = (500e3 + (378+60)*1e3 )/2;
-
-T1 = 2*pi*sqrt(a1^3/GM);
-T2 = 2*pi*sqrt(a2^3/GM);
-
-ri = [1;0;0]*(6378+200);
-vi = sqrt(2*GM/norm(ri) - GM/a1)*[0;1;0];
-t0 = 0;
-
-xi = [ri; vi];
-[tt,xx] = ode113(@twobodyode,[t0 T1/2],xi,opts,GM);
-xf = xx(end,:)';
-v2 = sqrt(2*GM/norm(xf(1:3)) - GM/a2)*[0; -1; 0];
-xi2 = [xf(1:3); v2];
-[tt1,xx1] = ode113(@twobodyode,[t0 T2/2],xi2,opts,GM);
-
-Npoints = length(tt);
-Npoints1 = length(tt1);
-
-y0 = [xi; xx(round(Npoints/2),:)'; xx1(1,:)'; xx(round(Npoints1/2),:)'; t0; t0+T1/2; t0+T1/2+T2/2 ];
 
 figure()
 hold on
@@ -188,7 +221,7 @@ plot3(xx1(:,1),xx1(:,2),xx1(:,3))
 axis equal
 
 % Create problem structure
-test = totalDV(y0,bodies)
+test = totalDV(y0,bodies);
 L2.objective = @(y) totalDV(y,bodies);
 L2.x0 = y0;
 L2.nonlcon = @(y) constraints(y,bodies);
@@ -205,7 +238,7 @@ L2.options = opts;
 [sol,DeltaV,~,output,lambda,gradient,H] = fmincon(L2);
 
 cspice_kclear();
-%% Ex 3 (check the measurement units)
+%% Ex 3 - PRETTY OKAY
 clearvars; close all; clc
 
 % Load kernels
@@ -248,8 +281,9 @@ grid on
 
 % Plot lambdaM (should always be >0 for time-optimal problems)
 figure()
+plot(SOL.x,SOL.y(14,:),'LineWidth',2)
+title('$\lambda_m$','Interpreter','latex')
 grid on
-plot(SOL.x,SOL.y(14,:))
 
 % Plot control action
 figure()
@@ -264,9 +298,15 @@ for j = 1:length(SOL.x)
     st(j)=sti;
 end
 
-plot(SOL.x,u)
-axis equal
+plot(SOL.x,u,'LineWidth',2)
+title('Control magnitude')
 grid on
+
+% Compute the solution endpoint defect
+norm(SOL.y(1:6,end)- [rf;vf],inf)
+
+% Clear kernel pool
+cspice_kclear();
 
 %% Functions
 function dy = twobodyode(~,y,mu)
@@ -366,13 +406,16 @@ function DV = costFcn(y,departureObj,arrivalObj,primary,frame)
 %COSTFCN function that computes the total DELTA-V required by the
 %trajectory
 
+% Time conversion constant
+DAY2SECS = 24*3600;
+
 r1 = y(1:3);
 v1 = y(4:6);
 
 x1 = [r1; v1];
 
-t1 = y(7);
-t2 = y(8);
+t1 = y(7)*DAY2SECS;
+t2 = y(8)*DAY2SECS;
 
 x2 = flow2BP(t1,x1,t2,primary.GM);
 
@@ -391,11 +434,15 @@ end
 
 function [c, ceq] = enforcePositions(y,departureObj,arrivalObj,primary,frame)
 % How can I avoid computing the flow AGAIN?
+
+% Time conversion constant
+DAY2SECS = 24*3600;
+
 r1 = y(1:3);
 v1 = y(4:6);
 
-t1 = y(7);
-t2 = y(8);
+t1 = y(7)*DAY2SECS;
+t2 = y(8)*DAY2SECS;
 
 radiusDep = cspice_spkpos(departureObj.Label,t1,frame,'NONE',primary.label);
 radiusArrival = cspice_spkpos(arrivalObj.Label,t2,frame,'NONE',primary.label);
@@ -406,10 +453,9 @@ r2 = x2(1:3);
 % Compute constraint violations
 c1 = norm(r1-radiusDep);
 c2 = norm(r2-radiusArrival);
-ToF = t2-t1;
 
 ceq = [c1; c2];
-c = ToF;
+c = [];
 end
 
 function STM = stateTransitionMatrix(t0,x0,t,mu)
@@ -846,6 +892,7 @@ function [DV,DV1,DV2,DV3] = totalDV(y,bodies)
 %   DV1[1]  :         DeltaV required by the first maneuver
 %   DV2[1]  :         DeltaV required by the second maneuver
 %   DV3[1]  :         DeltaV required by the third maneuver
+
 frame = 'J2000';
 % Extract the state vectors
 x1 = y(1:6);    r1 = x1(1:3);   v1 = x1(4:6);
@@ -857,7 +904,7 @@ x4 = y(19:24);  r4 = x4(1:3);   v4 = x4(4:6);
 muE = bodies{2}.GM;
 
 % Second burn time
-t3 = y(25);
+t3 = y(2);
 
 %First and last burn times
 t1 = y(26);     tN = y(27);
@@ -886,3 +933,30 @@ DV3 = norm(vL2_f - x5f(4:6));
 
 DV = DV1 + DV2 + DV3;
 end
+
+function y0 = initialGuess()
+% Initial guess definition (use 2BP bielliptic transfer as reference)
+opts = odeset('reltol', 1e-12, 'abstol', 1e-12);
+
+GM = 398600;
+a1 = (200 + 500000 + 6378)/2;
+a2 = (500e3 + (378+60)*1e3 )/2;
+
+T1 = 2*pi*sqrt(a1^3/GM);
+T2 = 2*pi*sqrt(a2^3/GM);
+
+ri = [1;0;0]*(6378+200);
+vi = sqrt(2*GM/norm(ri) - GM/a1)*[0;1;0];
+t0 = 0;
+
+xi = [ri; vi];
+[tt,xx] = ode113(@twobodyode,[t0 T1/2],xi,opts,GM);
+xf = xx(end,:)';
+v2 = sqrt(2*GM/norm(xf(1:3)) - GM/a2)*[0; -1; 0];
+xi2 = [xf(1:3); v2];
+[tt1,xx1] = ode113(@twobodyode,[t0 T2/2],xi2,opts,GM);
+
+Npoints = length(tt);
+Npoints1 = length(tt1);
+
+y0 = [xi; xx(round(Npoints/2),:)'; xx1(1,:)'; xx(round(Npoints1/2),:)'; t0; t0+T1/2; t0+T1/2+T2/2 ];
