@@ -25,6 +25,19 @@ T = 2*pi*sqrt(a^3/primary.GM);       % Period                            [ s ]
 x0 = [r0;v0];
 t0 = 0;
 
+% Define list of celestial bodies:
+labels = {'Sun';
+          'Earth';
+          'Moon'};
+
+% Initialize propagation data
+bodies = nbody_init(labels);
+
+% select frame string (SPICE naming convention)
+frame = 'J2000';
+[tt,xx] = ode113(@(t,y) nbody_rhs(t, y, bodies, frame),[t0 T],x0);
+plot3(xx(:,1),xx(:,2),xx(:,3))
+
 xend = flow2BP(t0,x0,T,primary.GM);
 
 % If error = 0 after one period our propagator is working correctly
@@ -121,10 +134,10 @@ E2M.options = optsFinDiff;
 
 sol=fsolve(E2M);
 
-[A,P,E,ERROR,VI,VF,TPAR,THETA] = lambertMR(r1, r2, ToF, primary.GM,0,0,0 );
+% [A,P,E,ERROR,VI,VF,TPAR,THETA] = lambertMR(r1, r2, ToF, primary.GM,0,0,0 );
 
-disp('The difference between the analytical lambert solver and the shooting one is:')
-norm(sol - VI)
+% disp('The difference between the analytical lambert solver and the shooting one is:')
+% norm(sol - VI)
 
 %%%%%%%%% delta_v minimizer %%%%%%%%%
 clear departure arrival
@@ -202,28 +215,53 @@ clearvars; close all; clc
 cspice_furnsh('assignment01.tm');
 
 % Define list of celestial bodies:
-labels = {'Sun';
-          'Earth';
+labels = {'Earth';
+          'Sun';
           'Moon'};
 
 % Initialize propagation data
 bodies = nbody_init(labels);
 
+% Adimensionalizing constants
+DAY2SECS = 24*3600;
+adim.L = 500000;        % [km]
+adim.T = DAY2SECS;      % [s]
+
+% adim.MU = 
+
 % select integration frame string (SPICE naming convention)
 frame = 'J2000';
 
+dep_ep = '2022-Jan-09 00:00:00.0000 TDB';
+t1 = cspice_str2et(dep_ep);
+
+[y0,xxG,DVguess] = initialGuess3(t1,bodies,frame);
 
 figure()
+plot3(xxG(:,1),xxG(:,2),xxG(:,3))
 hold on
-plot3(xx(:,1),xx(:,2),xx(:,3))
-hold on
-plot3(xx1(:,1),xx1(:,2),xx1(:,3))
+grid on
 axis equal
 
+moonR = cspice_spkpos('moon',y0(end)*DAY2SECS,frame,'NONE','EARTH');
+rL2 = moonR/norm(moonR)*(norm(moonR)+60e3);
+
+plot3(rL2(1),rL2(2),rL2(3),'*r')
+
 % Create problem structure
-test = totalDV(y0,bodies);
+
 L2.objective = @(y) totalDV(y,bodies);
 L2.x0 = y0;
+
+L2.A = [zeros(1,24) 1 0 -1;
+        zeros(1,24) 1 -1 0;
+        zeros(1,24) 0 1 -1];
+L2.B = [0;0;0];
+
+L2.Aeq = [zeros(1,24) 1 0 0;
+          0 0 1 zeros(1,24)];
+L2.Beq = [t1/DAY2SECS; 0];
+
 L2.nonlcon = @(y) constraints(y,bodies);
 L2.solver = 'fmincon';
 
@@ -233,11 +271,17 @@ opts.ConstraintTolerance = 1;
 opts.Display = 'iter';
 opts.PlotFcn = 'optimplotfval';
 opts.Algorithm = 'sqp';
+opts.OutputFcn = @(x,optimOptions,state) plotTrajectory(x,bodies);
+opts.MaxFunctionEvaluations = 50e3;
+opts.ScaleProblem = true;
 L2.options = opts;
 
 [sol,DeltaV,~,output,lambda,gradient,H] = fmincon(L2);
 
+[tt,yy] = plotTrajectory(sol,bodies);
+
 cspice_kclear();
+
 %% Ex 3 - PRETTY OKAY
 clearvars; close all; clc
 
@@ -252,7 +296,7 @@ rf = [0 -29617.43 0]';
 vf = [1.8371 0.0002 3.1755]';
 
 % Define S/C parameters
-Tmax = 300*1e-6;
+Tmax = 100*1e-6;
 Isp = 3000;
 t0 = 0;
 GM = 398600;
@@ -546,7 +590,7 @@ errorH = Hf;
 errorPosition = XF(1:3) - rf;
 errorVelocity = XF(4:6) - vf;
 
-eqConstr = [errorPosition; errorVelocity; LambdaM*1000; errorH];
+eqConstr = [errorPosition; errorVelocity; LambdaM*100; errorH];
 
 % Output solution of ODE if requested
 % if nargout>2
@@ -736,32 +780,36 @@ function [dxdt] = nbody_rhs(t, x, bodies, frame)
 %   - Populated kernel pool (SPK, LSK, PCK kernels)
 %
 
-if not( strcmpi(frame, 'ECLIPJ2000') || strcmpi(frame, 'J2000') )
-    msg = 'Invalid integration reference frame, select either J2000 or ECLIPJ2000';
-    error(msg);
-end
-
 % Initialize right-hand-side
 dxdt = zeros(6,1);
 
-% Position detivative is object's velocity
+% Position derivative is object's velocity
 dxdt(1:3) = x(4:6);
-% Extract the object position from state x
+
+% Extract the object position at state x
 rr_es_obj = x(1:3);
 
-for i=1:length(bodies)
+% Compute the primary acceleration
+normRR2 = dot(rr_es_obj,rr_es_obj);
+normRR = sqrt(normRR2);
+
+dxdt(4:6) = -bodies{1}.GM*rr_es_obj/(normRR*normRR2);
+
+% Compute perturbing accelerations from the other bodies
+
+for i=2:length(bodies)
 
     % Retrieve position and velocity of i-th celestial body wrt Earth
     % Barycentre in an inertial frame
     rv_es_body = cspice_spkezr(bodies{i}.name, t, frame, 'NONE', 'EARTH');
     
-    % Extract object position wrt. i-th celestial body
-    dd_sc_body = rr_es_obj - rv_es_body(1:3);
-    
     % Extract i-th body pos wrt central
     rr_body_prim = rv_es_body(1:3);
-    rho2 = max(dot(rr_body_prim,rr_body_prim),0.01);
+    rho2 = dot(rr_body_prim,rr_body_prim);
     rho = sqrt(rho2);
+    
+    % Extract object position wrt. i-th celestial body
+    dd_sc_body = rr_es_obj - rr_body_prim;
     
     % Compute square distance and distance
     dist2 = dot(dd_sc_body, dd_sc_body);
@@ -803,7 +851,7 @@ function xt = flowNBP(t0,x0,t,bodies,frame,posOutOnly)
 
 tspan = [t0 t];
 
-options = odeset('reltol', 1e-12, 'abstol', 1e-12);
+options = odeset('reltol', 1e-8, 'abstol', 1e-8);
 [tt, xx] = ode113(@(t,x) nbody_rhs(t,x,bodies,frame), tspan, x0, options);
 
 
@@ -841,15 +889,19 @@ x3 = y(13:18);  r3 = x3(1:3);   v3 = x3(4:6);
 x4 = y(19:24);  r4 = x4(1:3);   v4 = x4(4:6);
 
 % Parameters used in calculations
-muE = bodies{2}.GM;
+muE = bodies{1}.GM;
 radiiE = cspice_bodvrd( 'EARTH', 'RADII', 3);
 R_e = radiiE(1);
+DAY2SECS = 24*3600;
+
+% First burn time
+t1 = y(25)*DAY2SECS;
 
 % Second burn time
-t3 = y(25);
+t3 = y(26)*DAY2SECS;
 
-%First and last burn times
-t1 = y(26);     tN = y(27);
+% Last burn times
+tN = y(27)*DAY2SECS;
 
 % Perform time discretization of each arc in 2 segments
 N = 3;
@@ -865,17 +917,15 @@ rL2_f = xMoon_f(1:3)/norm(xMoon_f(1:3))*(norm(xMoon_f(1:3)) + 60000);
 
 % Compute the constraints
 ceq = [norm(r1) - (200+R_e);
-       norm(v1) - sqrt(muE/norm(r1));
-       dot(v1,r1);
+%        dot(v1,r1)*10;
        flowNBP(t(1),x1,t(2),bodies,frame) - x2;
        flowNBP(t(2),x2,t3,bodies,frame,1) - r3;
        flowNBP(t3,x3,t(4),bodies,frame) - x4;
        flowNBP(t(4),x4,tN,bodies,frame,1) - rL2_f];
    
 c = [5e5 - norm(r3);
-    t3 - tN;
-    t1 - t3;
-    t3 - tN];
+    norm(v1) - sqrt(2*muE/norm(r1))
+    sqrt(muE/norm(r1)) - norm(v1)];
 
 end
 
@@ -901,17 +951,24 @@ x3 = y(13:18);  r3 = x3(1:3);   v3 = x3(4:6);
 x4 = y(19:24);  r4 = x4(1:3);   v4 = x4(4:6);
 
 % Parameters used in calculations
-muE = bodies{2}.GM;
+GM = bodies{1}.GM;
+DAY2SECS = 24*3600;
+
+% First burn time
+t1 = y(25)*DAY2SECS;
 
 % Second burn time
-t3 = y(2);
+t3 = y(26)*DAY2SECS;
 
-%First and last burn times
-t1 = y(26);     tN = y(27);
+% Last burn times
+tN = y(27)*DAY2SECS;
 
 % Perform time discretization of each arc in 2 segments
 N = 3;
-t = [linspace(t1,t3,N) linspace(t3,tN,N)];
+tvec1 = linspace(t1,t3,N);
+tvec2 = linspace(t3,tN,N);
+
+t = [tvec1 tvec2(2:end)];
 
 % Retrieve final orbital position of moon from ephemeris
 xMoon_f = cspice_spkezr('moon',tN,'J2000','NONE','EARTH');
@@ -924,7 +981,7 @@ x3f = flowNBP(t(2),x2,t3,bodies,frame);
 x5f = flowNBP(t(4),x4,tN,bodies,frame);
 
 % Compute the velocities before and after each impulse
-v0 = cross([0 0 1],r1/norm(r1))*sqrt(muE/norm(r1));
+v0 = cross([0;0;1],r1/norm(r1))*sqrt(GM/norm(r1));
 
 % Compute the DVs
 DV1 = norm(v1 - v0);
@@ -934,29 +991,173 @@ DV3 = norm(vL2_f - x5f(4:6));
 DV = DV1 + DV2 + DV3;
 end
 
-function y0 = initialGuess()
-% Initial guess definition (use 2BP bielliptic transfer as reference)
+function [y0,xxG,DV] = initialGuess3(t1,bodies,frame)
+% Initial guess definition (using a 2BP bielliptic transfer as reference)
+% 
+%   INPUT:
+%       t1[1]
+
 opts = odeset('reltol', 1e-12, 'abstol', 1e-12);
 
-GM = 398600;
-a1 = (200 + 500000 + 6378)/2;
+% Parameters used in calculations
+GM = bodies{1}.GM;
+radiiE = cspice_bodvrd( 'EARTH', 'RADII', 3);
+R_e = radiiE(1);
+DAY2SECS = 24*3600;
+
+% Semi-major axis of the two transfer orbits
+a1 = (200 + 500e3 + R_e)/2;
 a2 = (500e3 + (378+60)*1e3 )/2;
 
+% Orbital periods of the two transfer orbits
 T1 = 2*pi*sqrt(a1^3/GM);
 T2 = 2*pi*sqrt(a2^3/GM);
 
-ri = [1;0;0]*(6378+200);
-vi = sqrt(2*GM/norm(ri) - GM/a1)*[0;1;0];
-t0 = 0;
+t3 = t1 + T1/2 + 2*DAY2SECS;
+t5 = t3 + T2/2;
 
-xi = [ri; vi];
-[tt,xx] = ode113(@twobodyode,[t0 T1/2],xi,opts,GM);
-xf = xx(end,:)';
-v2 = sqrt(2*GM/norm(xf(1:3)) - GM/a2)*[0; -1; 0];
-xi2 = [xf(1:3); v2];
-[tt1,xx1] = ode113(@twobodyode,[t0 T2/2],xi2,opts,GM);
+% Get final position we need to reach
+moonX = cspice_spkezr('moon',t5,frame,'NONE','EARTH');
+moonR = moonX(1:3);
+moonV = moonX(4:6);
+
+% Initial and final position of the first arc in J2000 frame
+r1 = (6378+200)*moonR/norm(moonR);
+r3 = (500e3 + 60*1e3 + norm(moonR))*-(moonR+[10;10;10])/norm(moonR);
+r5 = moonR/norm(moonR)*(norm(moonR)+60e3);
+
+
+% Get initial and final velocity for the first arc
+[A,P,E,ERROR,VI1,VF1,TPAR,THETA] = lambertMR(r1, r3, t3-t1 , GM,0,0,0 );
+xi = [r1; VI1'];
+
+% Circular orbit velocity
+v0 = VI1/norm(VI1)*sqrt(GM/norm(r1));
+
+% Get initial and final velocities for the second arc
+[A,P,E,ERROR,VI2,VF2,TPAR,THETA] = lambertMR(r3, r5, t5-t3 , GM,0,0,0 );
+x3 = [r3; VI2'];
+
+% Propagate the first orbit for half a period
+segmentsNumber = 2;
+tspan1 = linspace(t1,t3,segmentsNumber);
+tspan2 = linspace(t3,t5 - 1*DAY2SECS,segmentsNumber);
+
+[tt,xx] = ode113(@(t,x) nbody_rhs(t,x,bodies,frame),tspan1,xi,opts);
+
+% Propagate second orbit
+[tt1,xx1] = ode113(@(t,x) nbody_rhs(t,x,bodies,frame),tspan2,x3,opts);
+
+% Output inital guess for the unknowns vector
+y0 = [xi; 
+      xx(2,:)';
+      x3;
+      xx1(2,:)';
+      t1/DAY2SECS;
+      t3/DAY2SECS;
+      t5/DAY2SECS];
+  
+ if nargout > 1
+     xxG = [xx; xx1];
+     DV = norm(v0-VI1)+norm(VF1-VI2)+norm(VF2-moonV);
+ end
+ 
+end
+
+function [y0,xxG] = initialGuess2(t1,bodies)
+% Initial guess definition (using a 2BP bielliptic transfer as reference)
+% 
+%   INPUT:
+%       t1[1]
+
+opts = odeset('reltol', 1e-12, 'abstol', 1e-12);
+
+% Parameters used in calculations
+GM = bodies{2}.GM;
+DAY2SECS = 24*60*60;
+
+% Initial guess definition
+r1 = [6578.1;0;0];
+v1 = [0;10.962;0];
+r2 = [-750000;0;0];
+v2 = [0.8; -0.65; 0];
+xi = [r1;v1];
+xi2 = [r2;v2];
+
+epsilon1 = 0.5*norm(v1)^2 - GM/norm(r1);
+a1 = -GM/(2*epsilon1);
+
+epsilon2 = 0.5*norm(v2)^2 - GM/norm(r2);
+a2 = -GM/(2*epsilon2);
+
+% Orbital periods of the two transfer orbits
+T1 = 2*pi*sqrt(a1^3/GM);
+T2 = 2*pi*sqrt(a2^3/GM);
+
+t3 = t1 + 15*DAY2SECS;
+t5 = t3 + 11*DAY2SECS;
+
+% Propagate the first orbit for half a period
+[tt,xx] = ode113(@(t,x) nbody_rhs(t,x,bodies,'J2000'),[t1 t3],xi,opts);
+
+% Propagate second orbit
+[tt1,xx1] = ode113(@(t,x) nbody_rhs(t,x,bodies,'J2000'),[t3 t5],xi2,opts);
 
 Npoints = length(tt);
 Npoints1 = length(tt1);
 
-y0 = [xi; xx(round(Npoints/2),:)'; xx1(1,:)'; xx(round(Npoints1/2),:)'; t0; t0+T1/2; t0+T1/2+T2/2 ];
+% Output inital guess for the unknowns vector
+y0 = [xi; 
+      xx(round(Npoints/2),:)';
+      xi2;
+      xx1(round(Npoints1/2),:)';
+      t1/DAY2SECS;
+      t3/DAY2SECS;
+      t5/DAY2SECS];
+  
+ if nargout > 1
+     xxG = [xx; xx1];
+ end
+ 
+end
+
+function [stop,tt,yy] = plotTrajectory(y,bodies)
+% set reference frame
+frame = 'J2000';
+opts = odeset('reltol', 1e-12, 'abstol', 1e-12);
+
+% Extract the state vectors
+x1 = y(1:6);    r1 = x1(1:3);   v1 = x1(4:6);
+x2 = y(7:12);   r2 = x2(1:3);   v2 = x2(4:6);
+x3 = y(13:18);  r3 = x3(1:3);   v3 = x3(4:6);
+x4 = y(19:24);  r4 = x4(1:3);   v4 = x4(4:6);
+
+DAY2SECS = 24*3600;
+% First burn time
+t1 = y(25)*DAY2SECS;
+
+% Second burn time
+t3 = y(26)*DAY2SECS;
+
+% Last burn times
+tN = y(27)*DAY2SECS;
+
+% Parameters used in calculations
+[tt1,xx1] = ode113(@(t,x) nbody_rhs(t,x,bodies,frame),[t1 t3],x1,opts);
+[tt2,xx2] = ode113(@(t,x) nbody_rhs(t,x,bodies,frame),[t3 tN],x3,opts);
+
+yy = [xx1; xx2];
+tt=[tt1;tt2];
+
+stop = 0;
+
+% plot solution
+figure()
+plot3(yy(:,1),yy(:,2),yy(:,3))
+hold on
+moonR = cspice_spkpos('moon',tt(end),frame,'NONE','EARTH');
+rL2 = moonR/norm(moonR)*(norm(moonR)+60e3);
+plot3(rL2(1),rL2(2),rL2(3),'*r')
+grid on
+axis equal
+end
