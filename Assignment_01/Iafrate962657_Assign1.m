@@ -2,7 +2,7 @@
 % Assignment # 1
 % Author: Davide Iafrate
 
-%% Ex 1 - OKAY
+%% Ex 1
 clearvars; close all; clc
 
 % Load kernels
@@ -28,7 +28,7 @@ t0 = 0;
 xend = flow2BP(t0,x0,T,primary.GM);
 
 % If error = 0 after one period our propagator is working correctly
-error = norm(xend-x0);
+error = norm(xend-x0)
 
 %% 2 -  LAMBERT PROBLEM SHOOTING SOLVER %%%%%%%%%
 %(Earth centered solution) - Validated
@@ -116,15 +116,18 @@ optsJacobian.SpecifyObjectiveGradient = true;
 E2M.options = optsJacobian;
 solSTM=fsolve(E2M);
 
-
-[A,P,E,ERROR,VI,VF,TPAR,THETA] = lambertMR(r1, r2, ToF, primary.GM,0,0,0 );
-
-disp('The difference between the analytical lambert solver and the shooting one is:')
-norm(solSTM - VI')
-norm(solFD - VI')
+%%%%% This section requires the lambertMR function from the zip file %%%%%
+% [A,P,E,ERROR,VI,VF,TPAR,THETA] = lambertMR(r1, r2, ToF, primary.GM,0,0,0 );
+% 
+% disp('The difference between the analytical lambert solver and the shooting one is:')
+% norm(solSTM - VI')
+% norm(solFD - VI')
 
 %% Point 3 - delta_v minimizer (lambert solver) %%%%%%%%%
-clear E2MT primary departure arrival
+clearvars; close all; clc
+
+% Load kernels
+cspice_furnsh('assignment01.tm');
 
 departure.Label = 'Earth';
 arrival.Label = 'Mars';
@@ -138,22 +141,23 @@ DAY2SECS = 24*3600;
 departure.lb = cspice_str2et('2022-Jan-1 00:00:00.0000 TDB')/DAY2SECS;
 departure.ub = cspice_str2et('2023-Jan-1 00:00:00.0000 TDB')/DAY2SECS;
 
-arrival.lb = cspice_str2et('2022-Mar-1 00:00:00.0000 TDB')/DAY2SECS;
+arrival.lb = cspice_str2et('2022-Jun-1 00:00:00.0000 TDB')/DAY2SECS;
 arrival.ub = cspice_str2et('2023-Dec-31 00:00:00.0000 TDB')/DAY2SECS;
 
 minToF = 300;
 
 % Define inital guess for the state (from computing DV grid) 
-departureguess = cspice_str2et('2022-Jan-20 00:00:00.0000 TDB')/DAY2SECS;
+departureguess = cspice_str2et('2022-Sep-20 00:00:00.0000 TDB')/DAY2SECS;
 arrivalguess = departureguess + minToF;
 
-y0 = [departureguess/DAY2SECS; arrivalguess];
+y0 = [departureguess; arrivalguess];
 
 % Define optimization problem structure
 E2MT.objective = @(y) lambertcostFcn(y); 
 E2MT.x0 = y0; % Initial guess for the state
 E2MT.A = [1 -1];                    % Linear inequality constr for time
-E2MT.B = 0;
+E2MT.B = -250;
+
 E2MT.lb = [departure.lb; 
             arrival.lb];
         
@@ -164,10 +168,11 @@ E2MT.solver='fmincon';
 
 % Define and set options
 opts = optimoptions('fmincon');
-opts.ConstraintTolerance = 0.1;
+opts.ConstraintTolerance = 0.01;
 opts.Display = 'iter';
 opts.PlotFcn = 'optimplotfval';
 opts.ScaleProblem = true;
+opts.Algorithm = 'active-set';
 
 E2MT.options = opts;
 
@@ -175,8 +180,7 @@ E2MT.options = opts;
 [sol,DeltaV] = fmincon(E2MT);
 [DV,xx] = lambertcostFcn(sol);
 
-% Checks
-% End state position error
+% plots data
 departureTime = sol(1)*DAY2SECS;
 arrivalTime = sol(2)*DAY2SECS;
 
@@ -198,7 +202,7 @@ plot3(planetDeparture(1),planetDeparture(2),planetDeparture(3),...
     '-o','Color','b','MarkerSize',10,'MarkerFaceColor','#D9FFFF');
 plot3(planetArrival(1),planetArrival(2),planetArrival(3),...
      '-o','Color','r','MarkerSize',10,'MarkerFaceColor','#D95319');
-legend('Transfer arc', 'Earth @ departure','Mars @ arrival')
+legend('Transfer arc', 'Earth @ departure','Mars @ arrival','Location','best')
 
 % Print departure and arrival dates and time of flight
 departureDate = cspice_et2utc(departureTime,'C',0)
@@ -206,7 +210,10 @@ arrivalDate = cspice_et2utc(arrivalTime,'C',0)
 ToF_DAYS = diff(sol)
 
 %% delta_v minimizer (free initial state x1) %%%%%%%%%
-clear primary departure arrival
+clearvars; close all; clc
+
+% Load kernels
+cspice_furnsh('assignment01.tm');
 
 primary.Label = 'Sun';
 primary.GM = cspice_bodvrd(primary.Label,'GM',1);   % Gravitational param
@@ -232,25 +239,30 @@ ToF = 300; %  ToF in days
 arrivalguess = departureguess/DAY2SECS + ToF;
 
 stateDep = cspice_spkezr(departure.Label,departureguess,frame,'NONE',primary.Label);
-stateDep(4:6) = stateDep(4:6) + cross([0;0;1],stateDep(1:3)/norm(stateDep(1:3)))*7;
+stateDep(4:6) = stateDep(4:6) + cross([0;0;1],stateDep(1:3)/norm(stateDep(1:3)))*3;
 
 y0 = [stateDep; departureguess/DAY2SECS; arrivalguess];
 
 % Define optimization problem structure
 E2MT.objective = @(y) costFcn(y,departure,arrival,primary,frame); 
 E2MT.x0 = y0; % Initial guess for the state
-E2MT.A = [0 0 0 0 0 0 1 -1];                    % Linear inequality constr for time
+E2MT.A = [0 0 0 0 0 0 1 -1];                    % Linear inequality constraint for time
 E2MT.B = 0;
 E2MT.lb = [-5e7; -5e7; -5e4; 
             -28; -28; -10;
             departure.lb; 
             arrival.lb];
-        
+
+% E2MT.lb = [-Inf; -Inf; -Inf; 
+%             -Inf; -Inf; -Inf;
+%             departure.lb; 
+%             arrival.lb];
+
 E2MT.ub = [3e8; 3e8; 5e4;
-            40; 40; 10;
+             35; 35; 10;
             departure.ub;
             arrival.ub];
-        
+
 E2MT.nonlcon = @(y) enforcePositions(y,departure,arrival,primary,frame);
 E2MT.solver='fmincon';
 
@@ -260,6 +272,7 @@ opts.ConstraintTolerance = 0.1;
 opts.Display = 'iter';
 opts.PlotFcn = 'optimplotfval';
 opts.ScaleProblem = true;
+opts.Algorithm = 'sqp';
 
 E2MT.options = opts;
 
@@ -304,7 +317,7 @@ legend('Transfer arc', 'Earth @ departure','Mars @ arrival','Location','best')
  % Clear kernel pool
 cspice_kclear();
 
-%% Ex 2
+%% Ex 2 --- ( Takes a few minutes to run)
 clearvars; close all; clc
 
 % Load kernels
@@ -330,83 +343,73 @@ dep_ep2 = '2022-Dec-31 00:00:00.0000 TDB';
 t1_start = cspice_str2et(dep_ep1);
 t1_end = cspice_str2et(dep_ep2);
 
-% [y0,xxG1,xxG2] = biellipticGuess(t1_end,bodies,frame);
-% figure()
-% plot3(xxG1(1,:),xxG1(2,:),xxG1(3,:))
-% hold on
-% plot3(xxG2(1,:),xxG2(2,:),xxG2(3,:))
+y0 = initialGuessNode(t1_start,1);
 
-[y0,xxG,DVguess] = initialGuess2(t1_end,bodies,frame);
-figure()
-plot3(xxG(1,:),xxG(2,:),xxG(3,:))
-hold on
+% Create problem structure
 
-grid on
-axis equal
-moonR = cspice_spkpos('moon',y0(end)*DAY2SECS,frame,'NONE','EARTH');
-rL2 = moonR/norm(moonR)*(norm(moonR) + 60e3);
+L2.objective = @(y) totalDV(y,bodies);
 
-% Plot L2 target position
-plot3(rL2(1),rL2(2),rL2(3),'*r')
+L2.A = [zeros(1,24) 1 0 -1;
+    zeros(1,24) 1 -1 0;
+    zeros(1,24) 0 1 -1];
 
-% Plot initial guess positions
-plot3(y0(1),y0(2),y0(3),'*k')
-plot3(y0(7),y0(8),y0(9),'*k')
-plot3(y0(13),y0(14),y0(15),'*k')
-plot3(y0(19),y0(20),y0(21),'*k')
+L2.Aeq = [zeros(1,24) 1 0 0;
+        0 0 1 zeros(1,24)];     % r1_z = 0 (equatorial orbit)
+L2.B = [0;0;0];
 
+L2.nonlcon = @(y) constraints(y,bodies);
+L2.solver = 'fmincon';
+    
+% Define and set options
+opts = optimoptions('fmincon');
+opts.ConstraintTolerance = 0.01;
+opts.StepTolerance = 0.001;
+opts.Display = 'iter';
+% opts.PlotFcn = 'optimplotfval';
+opts.Algorithm = 'active-set';
+% opts.OutputFcn = @(x,optimOptions,state) plotTrajectory(x,bodies);
+
+opts.MaxFunctionEvaluations = 1e3;
+opts.ScaleProblem = true;
+L2.options = opts;
+    
+% Create times vector
 times = linspace(t1_start,t1_end,24);
+DV1 = zeros(size(times));
+DV2 = DV1;
+DV3 = DV1;
+
 for i=1:length(times)
     t1 = times(i);
-%     [y0,xxG1,xxG2] = biellipticGuess(t1,bodies,frame);
-    [y0,xxG1,xxG2] = initialGuess2(t1,bodies,frame);
 
-    [DVguess1,DV1,DV2,DV3] = totalDV(y0,bodies);
+    plotON = 0;
     
-    % Create problem structure
-    
-    L2.objective = @(y) totalDV(y,bodies);
+    y0 = initialGuessNode(t1,plotON);
     L2.x0 = y0;
     
-    L2.A = [zeros(1,24) 1 0 -1;
-        zeros(1,24) 1 -1 0;
-        zeros(1,24) 0 1 -1];
-    L2.B = [0;0;0];
-    
-    L2.Aeq = [zeros(1,24) 1 0 0;
-        0 0 0*1 zeros(1,24)];
     L2.Beq = [t1/DAY2SECS; 0];
-    
-    L2.nonlcon = @(y) constraints(y,bodies);
-    L2.solver = 'fmincon';
-    
-    % Define and set options
-    opts = optimoptions('fmincon');
-    opts.ConstraintTolerance = 0.01;
-    opts.StepTolerance = 0.001;
-    opts.Display = 'iter';
-    opts.PlotFcn = 'optimplotfval';
-    opts.Algorithm = 'active-set';
-%     opts.OutputFcn = @(x,optimOptions,state) plotTrajectory(x,bodies);
 
-    opts.MaxFunctionEvaluations = 50e3;
-    opts.ScaleProblem = true;
-    L2.options = opts;
-    
-    [sol,DeltaV(i),~,output,lambda,gradient,H] = fmincon(L2);
+
+    [sol,DeltaV(i)] = fmincon(L2);
     figure(i)
     [tt,yy] = plotTrajectory(sol,bodies);
-    [~,DV1,DV2,DV3] = totalDV(y0,bodies);
+    [~,DV1(i),DV2(i),DV3(i)] = totalDV(y0,bodies);
+
 end
 
+dateLabels = cspice_etcal(times);
+
 figure()
-plot(times,DeltaV,'LineWidth',2)
+y = [DV1;DV2;DV3];
+bar(times,y,'stacked')
 ylabel('DV [km/s]')
-grid on
+xticks(times(1:3:end))
+xticklabels(dateLabels(1:3:end,1:11))
+legend('Burn 1','Burn 2','Burn 3','Location','northeastoutside')
 
 cspice_kclear();
 
-%% Ex 3 - OKAY
+%% Ex 3
 clearvars; close all; clc
 
 % Load kernels
@@ -491,22 +494,22 @@ ylabel('$Thrust\; u [-]$','Interpreter','latex')
 norm(SOL.y(1:6,end)- [rf;vf],inf)
 
 % Compute t_f = f(Tmax)
-Tmax = (100:50:300)*1e-6;
+Tmax = (100:50:1000)*1e-6;
 for i = 1:length(Tmax)
     [Z(:,i),fval] = fsolve(@(x) shootingFcn(x,x0,t0,rf,vf,GM,Tmax(i),Isp),Lambda0_guess,options);
+    Lambda0_guess = Z(:,i);
 end
 times = Z(end,:);
 
 % Plot the transfer time
 figure()
-plot(Tmax*1e3,times*24,'LineWidth',2)
+plot(Tmax*1e3,times*24,'-o','LineWidth',1.5)
 grid on
-xlabel('$Thrust [N]$','Interpreter','latex')
+xlabel('$T_{max} [N]$','Interpreter','latex')
 ylabel('$Time of Flight [h]$','Interpreter','latex')
 
 % Clear kernel pool
 cspice_kclear();
-
 %% Functions
 function dy = twobodyode(~,y,mu)
 %TWOBODYODE Restricted two body problem ODE function
@@ -658,12 +661,12 @@ arrival.Label = 'Mars';
 ToF = t2 - t1;
 
 % Initial position vector [km]
-x1 = cspice_spkezr(departure.Label,t1,'ECLIPJ2000','NONE',primary.label);
+x1 = cspice_spkezr(departure.Label,t1,frame,'NONE',primary.label);
 r1 = x1(1:3);
 v1_0 = x1(4:6);
 
 % Final position vector [km]
-r2 = cspice_spkpos(arrival.Label,t2,'ECLIPJ2000','NONE',primary.label);      
+r2 = cspice_spkpos(arrival.Label,t2,frame,'NONE',primary.label);      
 
 % Initial guess as planet velocity
 E2M.objective = @(x) objectiveFun(x,t1,ToF,primary.GM,r2,r1);
@@ -672,7 +675,7 @@ E2M.solver = 'fsolve';
 
 % Set options using STM
 opts = optimoptions('fsolve');
-opts.Display='iter';
+opts.Display='none';
 opts.SpecifyObjectiveGradient = true;
 opts.FunctionTolerance = 0.01;
 E2M.options = opts;
@@ -686,11 +689,13 @@ x1 = [r1; v1];
 stateDep = cspice_spkezr(departure.Label,t1,frame,'NONE',primary.label);
 stateArrival = cspice_spkezr(arrival.Label,t2,frame,'NONE',primary.label);
 
+% Planets velocities at departure and arrival
 vDep = stateDep(4:6);
 vArr = stateArrival(4:6);
 
 v2 = xt(4:6);
 
+% Compute the  cost
 dv1 = norm(v1 - vDep);
 dv2 = norm(v2 - vArr);
 DV = dv1 + dv2;
@@ -722,8 +727,7 @@ c = [];
 end
 
 function STM = stateTransitionMatrix(t0,x0,t,mu)
-%STM Summary of this function goes here
-%   Detailed explanation goes here
+%STATETRANSITIONMATRIX function computing the state transition matrix
 
 stateLength = length(x0);
 
@@ -860,12 +864,25 @@ dY = [dX; dLambdaR; dLambdaV; dLambdaM];
 end
 
 function [u,St] = thrustMagRatio(LambdaV,LambdaM,Isp,m)
-% Generate the control input magnitude and direction
+%THRUSTMAGRATIO Generate the control input magnitude and direction
+%
+% INPUT:
+%   LambdaV[6x1]    :   velocity costate vector
+%   LambdaM[1]      :   mass costate
+%   Isp[1]          :   specific impulse
+%   m[1]            :   spacecraft mass
+% 
+% OUTPUT:
+%   u               :   control thrust magnitude
+%   St              :   switching function value
+
+% standard gravitational acceleration
 g0 = 9.80665*1e-3;  % [km/s^2]
 
 % Switching function computation
 St = - norm(LambdaV)*Isp*g0/m - norm(LambdaM);
 
+% Generate control thrust magnitude
 if St >= 0
     u = 0;
 else
@@ -1086,8 +1103,8 @@ end
 end
 
 function [c, ceq] = constraints(y,bodies)
-%CONSTRAINTS function producing the equality constraints and the
-%inequality constraints vectors
+%CONSTRAINTS function producing the equality and inequality constraints 
+% vectors
 % 
 % INPUT:
 %   y[29x1] :       state vector of optimization variables
@@ -1135,7 +1152,6 @@ rL2_f = xMoon_f(1:3)/norm(xMoon_f(1:3))*(norm(xMoon_f(1:3)) + 60000);
 
 % Compute the constraints
 ceq = [norm(r1) - (200+R_e);
-%        dot(v1,r1)*100;
        flowNBP(t(1),x1,t(2),bodies,frame) - x2;
        flowNBP(t(2),x2,t3,bodies,frame,1) - r3;
        flowNBP(t3,x3,t(4),bodies,frame) - x4;
@@ -1210,266 +1226,19 @@ DV3 = norm(vL2_f - x5f(4:6));
 DV = DV1 + DV2 + DV3;
 end
 
-function [y0,xxG1,xxG2] = biellipticGuess(t1,bodies,frame)
-% Initial guess definition (using a 2BP bielliptic transfer as reference)
-% 
-%   INPUT:
-%       t1[1]
-
-opts = odeset('reltol', 1e-12, 'abstol', 1e-12);
-
-% Parameters used in calculations
-GM = bodies{1}.GM;
-radiiE = cspice_bodvrd( 'EARTH', 'RADII', 3);
-R_e = radiiE(1);
-DAY2SECS = 24*3600;
-r0 = R_e + 200;
-
-% Get final position we need to reach
-rp1 = 1/(2/(r0)-1/(500e3));
-
-a1 = (rp1 + 500e3)/2;
-e1 = (500e3-rp1)/(2*a1);
-a2 = (500e3 + 400e3)/2;
-T1 = 2*pi*sqrt(a1^3/GM);
-T2 = 2*pi*sqrt(a2^3/GM);
-
-% Get the two eccentric anomalies
-th1 = pi/2;
-th2 = pi;
-
-E1 = 2*atan2(tan(th1/2),sqrt((1+e1)/(1-e1)));
-E2 = 2*atan2(tan(th2/2),sqrt((1+e1)/(1-e1)));
-
-DeltaT = sqrt(a1^3/GM)*(E2-e1*sin(E2)-E1+e1*sin(E1));
-% Compute Delta t
-t3 = t1 + DeltaT;
-t5 = t3 + T2/2;
-
-moonX = cspice_spkezr('moon',t5,frame,'NONE','EARTH');
-moonR = moonX(1:3);
-moonV = moonX(4:6);
-
-[aM, eM, iM, RAANM, omegaM, fM] = car2kep(moonR,moonV,GM);
-rL2 = moonR/norm(moonR)*(norm(moonR)+60e3);
-r3 = -moonR/norm(moonR)*500e3;
-
-
-% Orbital periods of the two transfer orbits
-th1 = pi/2;
-th2 = pi;
-RAAN1 = RAANM;
-om1 = fM+omegaM;
-
-
-[r1,v1] = kep2car(a1,e1,iM,RAAN1,om1,th1,GM);
-[r2,v2] = kep2car(a1,e1,iM,RAAN1,om1,th2,GM);
-
-RAAN2 = RAANM;
-om2 = om1;
-a2 = (norm(r3)+norm(rL2)+100e3)/2;
-e2 = -(norm(r3)-100e3-norm(rL2))/(2*a2);
-
-th3 = pi;
-th4 = 3*pi/2;
-
-[r3,v3] = kep2car(a2,e2,iM,RAAN2,om2,th3,GM);
-[r4,v4] = kep2car(a2,e2,iM,RAAN2,om2,th4,GM);
-
-% Orbital period
-T2 = 2*pi*sqrt(a2^3/GM);
-
-% Propagation times
-t3 = t1 + DeltaT;
-t5 = t3 + T2/2;
-
-x1 = [r1';v1']; x2_test = [r2';v2'];
-x3 = [r3';v3']; x4_test = [r4';v4'];
-
-% Propagate first orbit
-% sol1 = ode113(@(t,x) nbody_rhs(t,x,bodies,frame),[t1 t3],x1,opts);
-
-% Propagate second orbit
-% sol2 = ode113(@(t,x) nbody_rhs(t,x,bodies,frame),[t3 t5],x3,opts);
-
-% Propagate first orbit
-sol1 = ode113(@(t,x) twobodyode(t,x,GM),[t1 t3],x1,opts);
-
-% Propagate second orbit
-sol2 = ode113(@(t,x) twobodyode(t,x,GM),[t3 t5],x3,opts);
-
-% Extract points
-x2 = deval(sol1,(t1+t3)/2);
-x4 = deval(sol2,(t3+t5)/2);
-
-% Output inital guess for the unknowns vector
-y0 = [x1; 
-      x2;
-      x3;
-      x4;
-      t1/DAY2SECS;
-      t3/DAY2SECS;
-      t5/DAY2SECS];
-  
- if nargout > 1
-     xxG1 = sol1.y;
-     xxG2 = sol2.y;
-%      DV = norm(v0-VI1)+norm(VF1-VI2)+norm(VF2-moonV);
- end
- 
-end
-
-function [y0,xxG,DV] = initialGuess(t1,bodies,frame)
-% Initial guess definition (using a 2BP bielliptic transfer as reference)
-% 
-%   INPUT:
-%       t1[1]
-
-opts = odeset('reltol', 1e-12, 'abstol', 1e-12);
-
-% Parameters used in calculations
-GM = bodies{1}.GM;
-radiiE = cspice_bodvrd( 'EARTH', 'RADII', 3);
-R_e = radiiE(1);
-DAY2SECS = 24*3600;
-
-% Semi-major axis of the two transfer orbits
-a1 = (200 + 500e3 + R_e)/2;
-a2 = (500e3 + (378+60)*1e3 )/2;
-
-% Orbital periods of the two transfer orbits
-T1 = 2*pi*sqrt(a1^3/GM);
-T2 = 2*pi*sqrt(a2^3/GM);
-
-t3 = t1 + T1/2 + 2*DAY2SECS;
-t5 = t3 + T2/2;
-
-% Get final position we need to reach
-moonX = cspice_spkezr('moon',t5,frame,'NONE','EARTH');
-moonR = moonX(1:3);
-moonV = moonX(4:6);
-
-% Initial and final position of the first arc in J2000 frame
-r1 = (6378+200)*moonR/norm(moonR);
-r3 = (500e3 + 60*1e3 + norm(moonR))*-(moonR+[10;10;10])/norm(moonR);
-r5 = moonR/norm(moonR)*(norm(moonR)+60e3);
-
-
-% Get initial and final velocity for the first arc
-[A,P,E,ERROR,VI1,VF1,TPAR,THETA] = lambertMR(r1, r3, t3-t1 , GM,0,0,0 );
-x1 = [r1; VI1'];
-
-% Circular orbit velocity
-v0 = VI1/norm(VI1)*sqrt(GM/norm(r1));
-
-% Get initial and final velocities for the second arc
-[A,P,E,ERROR,VI2,VF2,TPAR,THETA] = lambertMR(r3, r5, t5-t3 , GM,0,0,0 );
-x3 = [r3; VI2'];
-
-% Propagate the first orbit for half a period
-segmentsNumber = 2;
-times1 = linspace(t1,t3,segmentsNumber+1);
-times2 = linspace(t3,t5 - 1*DAY2SECS,segmentsNumber+1);
-
-sol1 = ode113(@(t,x) nbody_rhs(t,x,bodies,frame),[t1 t3],x1,opts);
-
-% Propagate second orbit
-sol2 = ode113(@(t,x) nbody_rhs(t,x,bodies,frame),[t3 t5],x3,opts);
-
-% Extract points
-x2 = deval(sol1,(t1+t3)/2);
-x4 = deval(sol2,(t3+t5)/2);
-% Output inital guess for the unknowns vector
-y0 = [x1; 
-      x2;
-      x3;
-      x4;
-      t1/DAY2SECS;
-      t3/DAY2SECS;
-      t5/DAY2SECS];
-  
- if nargout > 1
-     xxG = [sol1.y sol2.y];
-     DV = norm(v0-VI1)+norm(VF1-VI2)+norm(VF2-moonV);
- end
- 
-end
-
-function [y0,xxG,DV] = initialGuess2(t1,bodies,frame)
-% Initial guess definition (using a 2BP bielliptic transfer as reference)
-% 
-%   INPUT:
-%       t1[1]
-
-opts = odeset('reltol', 1e-12, 'abstol', 1e-12);
-
-% Parameters used in calculations
-GM = bodies{1}.GM;
-radiiE = cspice_bodvrd( 'EARTH', 'RADII', 3);
-R_e = radiiE(1);
-DAY2SECS = 24*3600;
-
-% Semi-major axis of the two transfer orbits
-a1 = (200 + 505e3 + R_e)/2;
-a2 = (505e3 + (378+60)*1e3 )/2;
-
-% Orbital periods of the two transfer orbits
-T1 = 2*pi*sqrt(a1^3/GM);
-T2 = 2*pi*sqrt(a2^3/GM);
-
-t3 = t1 + T1/2;
-t5 = t3 + T2/2;
-
-% Get final position we need to reach
-moonX = cspice_spkezr('moon',t5,frame,'NONE','EARTH');
-moonR = moonX(1:3);
-moonV = moonX(4:6);
-r5 = moonR/norm(moonR)*(norm(moonR)+60e3);
-
-% Initial and final position of the first arc in J2000 frame
-r1dir = [moonR(1:2); 0]/norm([moonR(1:2); 0]);
-r1norm = 6378+200;
-r1 = r1norm*r1dir;
-v1 = sqrt(GM*(2/r1norm - 1/a1))*cross([0;0;1],r1dir)/norm(cross([0;0;1],r1dir));
-x1 = [r1;v1];
-
-sol1 = ode113(@(t,x) twobodyode(t,x,GM),[t1 t3],x1,opts);
-
-r3 = sol1.y(1:3,end);
-
-normal=cross(r3,r5);
-normal = normal/norm(normal);
-
-if normal(3)>0
-    v3 =sqrt(GM*(2/505e3 - 2/(norm(r5)+505e3)))*cross(normal,r3/norm(r3));
-else
-    v3 =sqrt(GM*(2/505e3 - 2/(norm(r5)+505e3)))*cross(-normal,r3/norm(r3));
-end
-x3 = [r3;v3];
-% Propagate second orbit
-sol2 = ode113(@(t,x) twobodyode(t,x,GM),[t3 t5],x3,opts);
-
-% Extract points
-x2 = deval(sol1,(t1+t3)/2);
-x4 = deval(sol2,(t3+t5)/2);
-% Output inital guess for the unknowns vector
-y0 = [x1; 
-      x2;
-      x3;
-      x4;
-      t1/DAY2SECS;
-      t3/DAY2SECS;
-      t5/DAY2SECS];
-  
- if nargout > 1
-     xxG = [sol1.y sol2.y];
-     DV = 10;
-%      DV = norm(v0-VI1)+norm(VF1-VI2)+norm(VF2-moonV);
- end
- 
-end
-
 function [stop,tt,yy] = plotTrajectory(y,bodies)
+%PLOTTRAJECTOR function plotting the solution trajectory
+% 
+% INPUT:
+%   y[29x1] :       state vector of optimization variables
+%   bodies[1,6] :   cell-array created with function nbody_init
+% 
+% OUTPUT:
+%   stop[1x1]  :    stop flag for fmincon
+%   tt[1xN] :       integration times vector
+%   yy[27xN] :      state vector at each integration step
+
+
 % set reference frame
 frame = 'J2000';
 opts = odeset('reltol', 1e-12, 'abstol', 1e-12);
@@ -1497,17 +1266,32 @@ tN = y(27)*DAY2SECS;
 yy = [xx1; xx2];
 tt=[tt1;tt2];
 
+% If used as output function for plotting each iteration this flag tells
+% fmincon to stop or not
 stop = 0;
 
 % plot solution
 figure()
-plot3(yy(:,1),yy(:,2),yy(:,3))
+plot3(xx1(:,1),xx1(:,2),xx1(:,3),'LineWidth',1.5)
 hold on
+plot3(xx2(:,1),xx2(:,2),xx2(:,3),'LineWidth',1.5)
+
+% Plot Earth
+plot3(0,0,0,'-o','Color','b','MarkerSize',10,'MarkerFaceColor','#D9FFFF')
+
+% Plot L2
 moonR = cspice_spkpos('moon',tt(end),frame,'NONE','EARTH');
 rL2 = moonR/norm(moonR)*(norm(moonR)+60e3);
-plot3(rL2(1),rL2(2),rL2(3),'*r')
+plot3(rL2(1),rL2(2),rL2(3),'*r','MarkerSize',10)
+text(rL2(1),rL2(2),rL2(3),'L2','VerticalAlignment','bottom','HorizontalAlignment','right')
+
 grid on
 axis equal
+
+xlabel('[km]')
+ylabel('[km]')
+zlabel('[km]')
+
 end
 
 function [a, e, i, RAAN, omega, f] = car2kep(r_vec,v_vec,mu)
@@ -1661,12 +1445,11 @@ else % Elliptical/Hyperbolic orbit
 end
 end
 
-function [r_vec,v_vec]=kep2car(a,e,i,RAAN,omega,f,mu)
+function [r_vec,v_vec] = kep2car(a,e,i,RAAN,omega,f,mu)
 
 % Solution to: [a,e,f,RAAN,omega,i,mu]~~>[r,v]
 %
 % ATTENTION: 
-% 1)    Not sure it works with parabolic and hyperbolic orbits;
 % 1)    If i=0, RAAN loses physical meaning while omega represents the angle
 %       between X end the eccentricity vector. The algorithm gives strange 
 %       results for any other value. The reason being that while the axis Z
@@ -1759,4 +1542,162 @@ v_vec = T*v_pf_vect;
 r_vec = r_vec';
 v_vec = v_vec';
 
+end
+
+function u = L2AtNode(r3,t1)
+% L2ATNODE  function returning the z component of the position vector of
+% the spacecraft after a bielliptic transfer with apogee at r3 and starting
+% at epoch t1
+% 
+% INPUT:
+%   r3[1]   :   magnitude of the apogee radius
+%   t1[1]   :   departure epoch
+% 
+% OUTPUT:
+%   u[1]    :   z coordinate of L2 at final time
+
+GME = cspice_bodvrd('Earth', 'GM', 1);
+radiiE = cspice_bodvrd( 'EARTH', 'RADII', 3);
+R_e = radiiE(1);
+
+% Bielliptic transfer semi-major axis
+a1 = (r3 + 200 + R_e)/2;
+a2 = (r3 + 460e3)/2;
+
+% Bielliptic transfer periods
+T1 = 2*pi*sqrt(a1^3/GME);
+T2 = 2*pi*sqrt(a2^3/GME);
+
+% Total transfer time
+tf = t1 + T1/2 + T2/2;
+
+% Get final position we need to reach
+moonX = cspice_spkezr('moon',tf,'J2000','NONE','EARTH');
+moonR = moonX(1:3);
+
+% Final L2 position
+RL2 = moonR/norm(moonR)*(norm(moonR) + 60e3);
+
+% Make sure that the moon is at the node line
+u = RL2(3);
+
+end
+
+function y0 = initialGuessNode(t1,plotONOFF)
+% Initial guess definition (using a 2BP bielliptic transfer as reference)
+% 
+%   INPUT:
+%       t1[1]           : departure epoch
+%       plotONOFF[1]    : flag to enable/disable plot
+%                           |-> 1 : enabled
+%                           |-> 0 : disabled
+% 
+%   OUTPUT:
+%       y0[27x1]        : initial guess vector
+
+%
+frame = 'J2000';
+r3guess = 600e3;
+opts = optimoptions('fsolve');
+opts.Display='iter';
+r3norm = fsolve(@(x) L2AtNode(x,t1),r3guess);
+
+DAY2SECS = 24*3600;
+
+GME = cspice_bodvrd('Earth', 'GM', 1);
+radiiE = cspice_bodvrd( 'EARTH', 'RADII', 3);
+R_e = radiiE(1);
+
+% compute semi-major axis of the two orbits
+a1 = (r3norm + 200 + R_e)/2;
+a2 = (r3norm + 460e3)/2;
+e2 = (r3norm - 460e3)/(2*a2);
+
+T1 = 2*pi*sqrt(a1^3/GME);
+T2 = 2*pi*sqrt(a2^3/GME);
+
+t3 = t1 + T1/2;
+t5 = t1 + T1/2 + T2/2;
+
+% Get moon position at final time
+moonX = cspice_spkezr('moon',t5,'J2000','NONE','EARTH');
+moonR = moonX(1:3);
+moonV = moonX(4:6);
+
+RL2 = moonR/norm(moonR)*(norm(moonR) + 60e3);
+
+% Get keplerian parameters of the moon at final time
+[aM, eM, iM, RAANM, omegaM, fM] = car2kep(moonR,moonV,GME);
+
+RAANvers = [cos(RAANM); sin(RAANM); 0];
+if abs(dot(RAANvers,moonR/norm(moonR)) +1)<1e-12
+    RAANvers=-RAANvers;
+    RAANM = RAANM + pi;
+end
+r1 = RAANvers*(R_e+200);
+
+v1 = sqrt(GME*(2/norm(r1) - 1/a1))*cross([0;0;1],RAANvers);
+
+x1 = [r1; v1];
+
+optsODE = odeset('reltol', 1e-12, 'abstol', 1e-12);
+
+% Propagate first orbit
+sol1 = ode113(@(t,x) twobodyode(t,x,GME),[t1 t3],x1,optsODE);
+
+[r3,v3] = kep2car(a2,e2,iM,RAANM,0,pi,GME);
+
+x3 = [r3'; v3'];
+
+sol2 = ode113(@(t,x) twobodyode(t,x,GME),[t3 t5],x3,optsODE);
+
+
+% Extract points
+x2 = deval(sol1,(t1+t3)/2);
+x4 = deval(sol2,(t3+t5)/2);
+
+% Output inital guess for the unknowns vector
+y0 = [x1; 
+      x2;
+      x3;
+      x4;
+      t1/DAY2SECS;
+      t3/DAY2SECS;
+      t5/DAY2SECS];
+  
+ 
+     xxG1 = sol1.y;
+     xxG2 = sol2.y;
+ 
+ if plotONOFF == 1
+     
+     % Plot trajectory of the initial guess
+     
+     figure()
+     plot3(xxG1(1,:),xxG1(2,:),xxG1(3,:),'LineWidth',1.5)
+     hold on
+     plot3(xxG2(1,:),xxG2(2,:),xxG2(3,:),'LineWidth',1.5)
+     grid on
+     axis equal
+     
+     % Plot Earth position
+     plot3(0,0,0,'-o','Color','b','MarkerSize',10,'MarkerFaceColor','#D9FFFF')
+
+     % Plot L2 target position
+     moonR = cspice_spkpos('moon',y0(end)*DAY2SECS,frame,'NONE','EARTH');
+     rL2 = moonR/norm(moonR)*(norm(moonR) + 60e3);
+     
+     markerL2 = plot3(rL2(1),rL2(2),rL2(3),'*r');
+     
+     % Plot initial guess positions of NLP states
+     xs = y0(1:6:19);
+     ys = y0(2:6:20);
+     zs = y0(3:6:21);
+     
+     marker = plot3(xs,ys,zs,'*k');
+    
+     legend([marker markerL2],'States initial guesses','L2','Location','best')
+
+ end
+ 
 end
