@@ -28,14 +28,18 @@ station(2).alt = 117;                        % station altitude [m]
 station(2).frameName = 'WELLINGTON_TOPO';       % Topocentric frame name [-]
 station(2).minimumElevation = deg2rad(20);  % minimum elevation of the
                                             % tracked object [rad]
+station(2).R = diag([0.0005 0.0005]);  % Noise meaurement matrix for
+                                       % Right Ascension and Declination
                               
-station(3).name = 'La Silla';
+station(3).name = 'La-Silla';
 station(3).lat = -29.26117;          % station latitude [rad]
 station(3).lon = -70.73133;          % station longitude [rad]
 station(3).alt = 2400;                        % station altitude [m]
 station(3).frameName = 'LA-SILLA_TOPO';       % Topocentric frame name [-]
 station(3).minimumElevation = deg2rad(10);  % minimum elevation of the
                                             % tracked object [rad]
+station(3).R = diag([0.001 0.001]);  % Noise meaurement matrix
+                                     % for Right Ascension and Declination
 
 % Initial et time
 t0 = cspice_str2et('2021-Nov-19 14:25:39.6520 TDB');
@@ -67,6 +71,7 @@ sol = ode113(@twobodyode,tspan,x0mean,opts,mu);
 
 xx = deval(sol,tspan);
 tt = tspan;
+
 % Point 1
 
 for i = 1:3
@@ -129,7 +134,6 @@ for i = (n+1):2*n
 end
 
 % Transform the sigma points using the nonlinear transform (flow of 2BP)
-%%%% CHECK THE RESULTS, they seem to be too big %%%%
 for i=1:length(tSet)
     tf = tSet(i);
     Y0 = flow2BP(t0,chi0,tf,mu);
@@ -156,20 +160,42 @@ end
 n = 100;    Sigma = P0;
 R = mvnrnd(x0mean,Sigma,n);	% Each column of R contains a state to propagate
 
-tf = tSet(end);
+tLastVisibility = tSet(end);
+xxLastVisibility = deval(sol,tLastVisibility);
+
+% LAST STATION IS LA-SILLA, find a way to automate this maybe
+
+% The nominal center of the FoV of the station is in direction:
+[azimuth, elevation, range, ~] = measure(station(3).name,...
+                                        tLastVisibility, xxLastVisibility);
+
+antennaCenterVersor = [cos(azimuth) -sin(azimuth) sin(elevation)];
 
 for i = 1:n
 	xi = R(i,:);
-	xt = flow2BP(t0,xi,tf,mu);
+	xt = flow2BP(t0,xi,tLastVisibility,mu);
+    
+    % Compute the satellite position versor
+    [azimuth, elevation, range, ~] = measure(station(3).name,...
+                                            tLastVisibility, xt);
+    satVersor = [cos(azimuth) -sin(azimuth) sin(elevation)];
+    
+    % Compute the angle B/W the satellite and the antenna center
+    angle(i) = acos(dot(antennaCenterVersor,satVersor));
+    
 	B(i,:) = xt';
+    
+    % Compute how many points are inside the FoV of the station
 end
 
-% Compute the mean of propagated states 
+% Compute the sample mean of propagated states 
 x_f_mean = mean(B);
 
-% Compute the covariance of the propagated states
+% Compute the sample covariance of the propagated states
 Pfinal = cov(B);
 
+% Plot the % of points inside the station FoV
+pie(angle<(station(1).FoV/2))
 %% Exercise 2
 
 % Replace the path below with your own installation path if not present as
@@ -200,7 +226,7 @@ fprintf('TLE reference epoch: UTC %s', sat_epoch_str);
 [satrec,rteme,vteme] = sgp4(satrec,  0.0);
 
 % For each station
-for k=1:1
+for k=1:3
     
     % Maybe it can be useful to extract also the time instants of the
     % observations
@@ -208,20 +234,24 @@ for k=1:1
     station(k).measurements = stationMeasurements;
 end
 
-tf = cspice_str2et('2021-Nov-21 14:00:00.0000 TDB');
-objective = @(x) costFcn(x,station(1),t0,tf,mu);
+tf = cspice_str2et('2021-Nov-23 14:00:00.0000 TDB');
+objective = @(x) costFcn(x,station,t0,tf,mu);
 x0 = x0mean;
 options = optimoptions('lsqnonlin');
-options.MaxFunctionEvaluations = 10e3;
 options.Display = 'iter';
-[x, resnorm, residual, exitflag, ~, ~, jac] =...
+
+%%
+[x, resnorm, RES, exitflag, ~, ~, jac] =...
     lsqnonlin(objective,x0,[],[],options);
+
+Jac =full(jac);
+P_ls = resnorm/(length(RES)-length(x0)).*inv(Jac'*Jac);
 
 % clean kernel pool
 cspice_kclear();
-%% Functions
 
-function [azimuth, elevation, range, range_rate] = antenna_pointing(stationName, et, rv_target_eci)
+%% Functions
+function [sat_azimuth, sat_elevation, sat_range, sat_range_rate] =.. antenna_pointing(stationName, et, rv_target_eci)
 
 %station_visibility Summary of this function goes here
 %   Detailed explanation goes here
@@ -245,11 +275,11 @@ end
 
 % Compute range and range-rate
 % Compute euclidean norm along direction 1 (column-wise)
-range      = vecnorm(rv_station_sat_topo(1:3,:),2,1);
+sat_range      = vecnorm(rv_station_sat_topo(1:3,:),2,1);
 
 % Range rate is the scalar product of the velocity and a unit vector in the
 % range direction
-range_rate = dot(rv_station_sat_topo(4:6,:), rv_station_sat_topo(1:3,:)./range);
+sat_range_rate = dot(rv_station_sat_topo(4:6,:), rv_station_sat_topo(1:3,:)./sat_range);
 
 % Compute azimuth and elevation
 rll_station_sat = cspice_xfmsta(rv_station_sat_topo,'RECTANGULAR','LATITUDINAL','EARTH');
@@ -257,8 +287,66 @@ rll_station_sat = cspice_xfmsta(rv_station_sat_topo,'RECTANGULAR','LATITUDINAL',
 %fprintf('%.5f %.5f\n',sat_range-rll_station_sat(1,:))
 %fprintf('%.5f %.5f\n',sat_range_rate-rll_station_sat(4,:))
 
-azimuth = rll_station_sat(2,:);
-elevation = rll_station_sat(3,:);
+sat_azimuth = rll_station_sat(2,:);
+sat_elevation = rll_station_sat(3,:);
+
+end
+
+function varargout = measure(stationName, et, rv_target_eci)
+
+% Get from SPK kernel the station state in ECI reference frame
+rv_station_eci = cspice_spkezr(stationName, et, 'J2000', 'NONE', 'EARTH');
+   
+% Compute state vector of satellite as seen from the station in J2000
+rv_station_sat_eci = rv_target_eci - rv_station_eci;
+
+switch stationName
+    case 'Milano'
+        topoFrame = [stationName, '_TOPO'];
+
+        % Get state rotation matrix from ECI (J2000) to TOPOCENTRIC
+        ROT_ECI2TOPO = cspice_sxform('J2000',topoFrame, et);
+
+        % Convert target ECI state into topocentric
+        rv_station_sat_topo = zeros(size(rv_station_sat_eci));
+        for i = 1:size(rv_station_sat_eci,2)
+            rv_station_sat_topo(:,i) = ROT_ECI2TOPO(:,:,i)*rv_station_sat_eci(:,i);
+        end
+
+        % Compute range and range-rate
+        % Compute euclidean norm along direction 1 (column-wise)
+        range = vecnorm(rv_station_sat_topo(1:3,:),2,1);
+
+        % Range rate is the scalar product of the velocity and a unit vector in the
+        % range direction
+        range_rate = dot(rv_station_sat_topo(4:6,:), rv_station_sat_topo(1:3,:)./range);
+
+        % Compute azimuth and elevation
+        rll_station_sat = cspice_xfmsta(rv_station_sat_topo,...
+            'RECTANGULAR','LATITUDINAL','EARTH');
+
+        azimuth = rll_station_sat(2,:);
+        elevation = rll_station_sat(3,:);
+        
+        varargout = {azimuth, elevation, range, range_rate};
+        
+    case {'Wellington','La-Silla'}
+        
+        % Get position vector of the satellite as seen from the station in
+        % ECI coordinates (J2000)
+        rho = rv_station_sat_eci(1:3);
+        
+        % Compute the local right ascension and declination of the
+        % satellite
+        RA = atan2(rho(2),rho(1));
+        DECL = asin(rho(3)/norm(rho));
+        
+        varargout = {RA, DECL};
+        
+    otherwise
+        error('Station not part of the network!')
+end
+
 
 end
 
@@ -345,7 +433,7 @@ stationName = station.name;
 for i = 1:length(et)
     tt = et(i);
     rv_target = xECI(i,:);
-    [Az, El(i), rho, drho] = antenna_pointing(stationName, tt, rv_target);
+    [Az, El(i), rho, drho] = measure(stationName, tt, rv_target);
 end
 
 VIS = (El > station.minimumElevation)';
@@ -486,6 +574,8 @@ arcsec2rad = pi / (180*3600);
 
 visibilityMatrix = station.visibilityMatrix;
 
+stationName = station.name;
+
 Sigma = station.R;
 
 [rows,~] = size(visibilityMatrix);
@@ -494,17 +584,24 @@ tt = [];
 
 % For each visibility window
 for window = 1:rows
-  
+    
+    yMean = [];
+        
     % JD dates of the visibility window
-    tspan = station.visibilityMatrix(window,1):60:...
-            station.visibilityMatrix(window,2);
+    tStart = station.visibilityMatrix(window,1);
+    tEnd = station.visibilityMatrix(window,2);
+    
+    tspan = tStart:60:...
+            tEnd;
     tt = [tt tspan];
     
     % Get reference epoch
-    jdsatepoch = satrec.jdsatepoch;
-    jdsatepochf = satrec.jdsatepochf;
-    referenceJD = jdsatepoch + jdsatepochf;
-    
+
+    % Get TLE epoch
+    [year,mon,day,hr,min,sec] = invjday(satrec.jdsatepoch, satrec.jdsatepochf);
+    sat_epoch_str = sprintf('%d-%02d-%02dT%02d:%02d:%02.6f', [year,mon,day,hr,min,sec]);
+    epoch_et = cspice_str2et(sat_epoch_str);
+
     % corrective coefficients taken from EOP-Last5Years.txt
     ddpsi = -0.112684*arcsec2rad; %  [rad]
     ddeps = -0.006350*arcsec2rad; %  [rad]
@@ -514,10 +611,11 @@ for window = 1:rows
     for jj = 1:length(tspan)
         
         % Propagate the states using SGP4
-        minutesSinceRef = (tspan(jj)-referenceJD)/60;
+        minutesSinceRef = (tspan(jj)-epoch_et)/60;
         [satrec,rteme,vteme] = sgp4(satrec,  minutesSinceRef);
         
         et = tspan(jj);
+        
         ttt = cspice_unitim(et, 'ET', 'TDT')/cspice_jyear()/100;
         
         % ---------------------- eci transformations ----------------------
@@ -527,16 +625,15 @@ for window = 1:rows
         
         rv_target_eci = [reci; veci];
         
-        stationName = station.name;
-        % NB: for Milan the measurements are azimuth and elevation, for
-        % the other 2 stations are right ascension and declination!!!
-        % IMPROVEMENT: use array of function handles f(et,state)
         switch stationName
             case 'Milano'
                 [azimuth, elevation, range, ~] =...
-                    antenna_pointing(stationName, et, rv_target_eci);
+                    measure(stationName, et, rv_target_eci);
                 yMean(jj,1:3) = [rad2deg(azimuth) rad2deg(elevation) range];
-            otherwise
+            case {'Wellington','La-Silla'}
+                [RA, DECL] =...
+                    measure(stationName, et, rv_target_eci);
+                yMean(jj,1:2) = [rad2deg(RA) rad2deg(DECL)];
                 
         end
     end
@@ -544,23 +641,17 @@ for window = 1:rows
     % Generate the noisy measurement and output the corresponding
     % measurement times
     measurements(window).yNoisy = mvnrnd(yMean,Sigma)';
-    measurements(window).measurementTimes = tt;
+    measurements(window).measurementTimes = tspan;
 end
+
 end
 
 function costVect = costFcn(initialStateGuess,station,t0,tf,mu)
 
+% IMPROVEMENT: implement the WEIGHTED LEAST SQUARE USING SLIDE 22 as a
+% reference
 tspan = t0:60:tf;
 
-% Nx3 matrix of measurements
-measurements = [station(1).measurements(1).yNoisy';
-                station(1).measurements(2).yNoisy';
-                station(1).measurements(3).yNoisy';
-                station(1).measurements(4).yNoisy'];
-            
-% Column vector of measurement times
-measurementTimes = station(1).measurements(1).measurementTimes';
-   
 % Set options for ODE solver
 opts = odeset('reltol', 1e-12, 'abstol', 1e-12);
 
@@ -569,25 +660,55 @@ sol = ode113(@twobodyode,tspan,initialStateGuess,opts,mu);
 
 xx = deval(sol,tspan);
 
-% Compute the vector of measurements to be used
-usedMeasurementsIndexes = measurementTimes<=tf;
-usedMeasurements = measurements(usedMeasurementsIndexes,1:3);
+costVect = [];
 
-stationName = station.name;
+for k=1:length(station)
+    T = struct2table(station(k).measurements);
+    
+    % Nx3 or Nx2 matrix of measurements
+    measurements = cell2mat(T{:,1}')';
 
-costVect = zeros(3*length(usedMeasurementsIndexes),1);
-for i=1:length(usedMeasurementsIndexes)
-    index = (measurementTimes(i)-tspan(1))/60 +1;
+    % Column vector of measurement times
+    measurementTimes = cell2mat(T{:,2}');
+
+    res = residual(xx,station,measurementTimes,measurements,tspan);
     
-    rv_target_eci = xx(:,index);
-    et = measurementTimes(i);
-    
-    [azimuth, elevation, range, ~] =...
-                    antenna_pointing(stationName, et, rv_target_eci);
-    estimatedMeasurement = [rad2deg(azimuth) rad2deg(elevation) range];
-    
-    residual = estimatedMeasurement'-usedMeasurements(i,1:3)';
-    
-    costVect((3*i:(3*i+2))-2) = residual;
+    costVect = [costVect; res];
+
 end
+
+end
+
+function res = residual(xx,station,measurementTimes,measurements,tspan)
+
+    tf = tspan(end);
+    
+    % Compute the vector of measurements to be used
+    usedMeasurementsIndexes = measurementTimes<=tf;
+    usedMeasurements = measurements(usedMeasurementsIndexes,:);
+
+    stationName = station(k).name;
+
+%     costVect = zeros(3*length(usedMeasurementsIndexes),1);
+    
+    for i=1:length(usedMeasurementsIndexes)
+        index = (measurementTimes(i)-tspan(1))/60 +1;
+
+        rv_target_eci = xx(:,index);
+        et = measurementTimes(i);
+        
+        switch stationName
+            case 'Milano'
+                [azimuth, elevation, range, ~] =...
+                                measure(stationName, et, rv_target_eci);
+                estimatedMeasurement = [rad2deg(azimuth) rad2deg(elevation) range];
+            case {'Wellington','La-Silla'}
+                [RA, DECL] =...
+                        measure(stationName, et, rv_target_eci);
+                estimatedMeasurement = [rad2deg(RA) rad2deg(DECL)];
+        end
+        
+        res = estimatedMeasurement'-usedMeasurements(i,:)';
+        
+    end
 end
