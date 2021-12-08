@@ -46,7 +46,9 @@ Kernel content:
 					   '$KERNELS\de425s.bsp',
                        '$KERNELS\gm_de431.tpc',
 					   '$KERNELS\stations.tf',
-					   '$KERNELS\stations.bsp'
+					   '$KERNELS\stations.bsp',
+					   '$KERNELS\stations_ex3.tf',
+					   '$KERNELS\stations_ex3.bsp'
                       )
 
 \begintext
