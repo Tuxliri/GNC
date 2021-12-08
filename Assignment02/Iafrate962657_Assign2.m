@@ -116,46 +116,28 @@ for i=1:length(tSet)
     linearPt(:,:,i) = PHI*P0*PHI';
 end
 
-% Unscented transform
+% Unscented transform method
 n = 6;
-unscentedPt = zeros(6,6,length(tSet));
 
-% Generate sigma points
-matrixRoot = sqrtm(n*P0);
+% Weights computation
+alfa = 1e-3;
+beta = 2;
+k = 0;
+lambda = alfa^2*(n+k)-n;
 
-chi0 = x0mean;
+W0m = lambda/(n+lambda);
+W0c = lambda/(n+lambda)+(1-alfa^2+beta);
 
-for i = 1:n
-    chi(:,i) = x0mean + matrixRoot(i,:)';
-%     chi(:,i) = x0 + matrixRoot(:,i);
+Wi_mean = 1/(2*(n+lambda))*eye(2*n);
+Wi_cov = Wi_mean;
 
-end
+W_mean = diag([W0m; diag(Wi_mean)]);
+W_cov = diag([W0c; diag(Wi_cov)]);
 
-for i = (n+1):2*n
-    chi(:,i) = x0mean - matrixRoot(i-n,:)';
-%     chi(:,i) = x0 - matrixRoot(:,i-n);
-
-end
-
-% Transform the sigma points using the nonlinear transform (flow of 2BP)
-for i=1:length(tSet)
+for i = 1:length(tSet)
     tf = tSet(i);
-    Y0 = flow2BP(t0,chi0,tf,mu);
-    
-    for j = 1:2*n
-        x0mean = chi(:,j);
-        Y(:,j) = flow2BP(t0,x0mean,tf,mu);
-    end
-    
-    % Global matrix
-    Ytot = [Y0 Y]';
-    
-    % Compute the mean
-    Ymean = mean(Ytot);
-    
-    % Compute the covariance
-
-    unscentedPt(:,:,i) = cov(Ytot);
+    [xf_mean,Pt_i] = unscentedTransform(x0mean,P0,lambda,t0,tf,W_mean,W_cov,mu);
+    unscentedPt(:,:,i) = Pt_i;
 end
 
 % -----Point 3: Montecarlo analysis-----
@@ -280,6 +262,41 @@ for i = 1:length(rdm)
 end
 
 %% Functions
+
+function [Ymean,covariance] = unscentedTransform(x0mean,P0,lambda,t0,tf,Wm,Wc,mu)
+% Unscented transform
+n = length(x0mean);
+
+% Generate sigma points
+matrixRoot = sqrtm((n+lambda)*P0);
+
+chi0 = x0mean;
+
+for i = 1:n
+    chi(:,i) = x0mean + matrixRoot(i,:)';
+end
+
+for i = (n+1):2*n
+    chi(:,i) = x0mean - matrixRoot(i-n,:)';
+end
+
+% Transform the sigma points using the nonlinear transform (flow of 2BP)
+    
+Y0 = flow2BP(t0,chi0,tf,mu);
+
+for j = 1:2*n
+    x0mean = chi(:,j);
+    Y(:,j) = flow2BP(t0,x0mean,tf,mu);
+end
+
+% Global matrix
+Ytot = [Y0 Y]';     % 13x6 matrix containing on each row the propagation of
+                    % one of the sigma points
+                    
+[covariance, Ymean] = weightedcov(Ytot, Wm, Wc);
+
+end
+
 function [sat_azimuth, sat_elevation, sat_range, sat_range_rate] =...
                         antenna_pointing(stationName, et, rv_target_eci)
 
@@ -877,7 +894,7 @@ xk = xk_apriori_mean + Kk*(yk - Yk_mean_apriori);
 Pk = Pk_apriori - Kk*Pyy_k*(Kk');
 end
 
-function C = weightedcov(Y, Wm, Wc)
+function [C,Ymean] = weightedcov(Y, Wm, Wc)
 %   Weighted Covariance Matrix
 %
 %   WEIGHTEDCOV returns a symmetric matrix C of weighted covariances
@@ -911,26 +928,49 @@ function C = weightedcov(Y, Wm, Wc)
 %   Check also WEIGHTEDCORRS (FE 20846) and KENDALLTAU (FE 27361)
 
 % Check input
-ctrl = isvector(w) & isreal(w) & ~any(isnan(w)) & ~any(isinf(w)) & all(w > 0);
+ctrl = isreal(Wm) & ~any(isnan(Wm)) & ~any(isinf(Wm));
 if ~ctrl
-  error('Check w: it needs be a vector of real positive numbers with no infinite or nan values!')
+  error('Check Wm: it needs be a matrix of real positive numbers with no infinite or nan values!')
 end
+
+% Check input
+ctrl = isreal(Wc) & ~any(isnan(Wc)) & ~any(isinf(Wc));
+if ~ctrl
+  error('Check Wc: it needs be a vector of real positive numbers with no infinite or nan values!')
+end
+
 ctrl = isreal(Y) & ~any(isnan(Y)) & ~any(isinf(Y)) & (size(size(Y), 2) == 2);
 if ~ctrl
   error('Check Y: it needs be a 2D matrix of real numbers with no infinite or nan values!')
 end
-ctrl = length(w) == size(Y, 2);
+ctrl = length(diag(Wc)) == size(Y, 1);
 if ~ctrl
   error('size(Y, 1) has to be equal to length(w)!')
 end
 
 wm = diag(Wm);
-wc = diag(Wc);
 
 [T, N] = size(Y);                   % T: number of observations;
                                     % N: number of variables
-C = Y - repmat(wm' * Y, T, 1);       % Remove mean (which is, also, weighted)
-C = C' * (C .* repmat(w, 1, N));    % Weighted Covariance Matrix
-C = 0.5 * (C + C');                 % Must be exactly symmetric
+                                    
+% Compute the weighted mean
+% Ymean = sum(Y.*repmat(wm,1,N));
+
+% MULTI12 = Y - repmat(Ymean,T,1) ;   % Remove mean (which is, also, weighted)
+% C = MULTI12'*Wc*MULTI12;             % Weighted Covariance Matrix
+% C = 0.5 * (C + C');                 % Ensure symmetry
+
+Ymean=zeros(1,N);
+Py=zeros(N);
+for i=1:T
+Wi = Wm(i,i);
+Ymean = Ymean + Wi*Y(i,:);
+end
+for i=1:T
+Wi = Wc(i,i);
+Py = Py + Wi*(Y(i,:)-Ymean)'*(Y(i,:)-Ymean);
+
+C = Py;
+end
 
 end
