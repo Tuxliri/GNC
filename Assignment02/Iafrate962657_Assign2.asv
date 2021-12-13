@@ -212,28 +212,28 @@ fprintf('TLE reference epoch: UTC %s', sat_epoch_str);
 % Generate the measurements for each station
 for k=1:3
     station(k).measurements = measurementFun(satrec,station(k));
+    
 end
 
-tfList = [cspice_str2et('2021-Nov-21 14:00:00.0000 TDB');
-      cspice_str2et('2021-Nov-22 14:00:00.0000 TDB');
+tf = [cspice_str2et('2021-Nov-21 14:00:00.0000 TDB');
+      cspice_str2et('2021-Nov-23 14:00:00.0000 TDB');
       cspice_str2et('2021-Nov-23 14:00:00.0000 TDB')];
 
-for jj = 1:3
-    tf = tfList(jj);
-    
-    objective = @(x) costFcn(x,station,sat_epoch_et,tf,mu,1);
-    x0 = x0mean;
-    options = optimoptions('lsqnonlin','Algorithm',...
-        'levenberg-marquardt','Display','iter','StepTolerance',1e-10);
-    
-    [x(:,jj), resnorm, RES, ~, ~, ~, jac] =...
-        lsqnonlin(objective,x0,[],[],options);
-    
-    Jac = full(jac);
-    P_ls(:,:,jj) = resnorm/(length(RES)-length(x0)).*inv(Jac'*Jac);
-end
+x0=sol.y(:,1);
+[residual0,parout]=costFcn(x0,station,sat_epoch_et,tf,mu,1);
 
-% ----- Point (2b) ---- With a priori information
+objective = @(x) costFcn(x,station,sat_epoch_et,tf,mu,1);
+x0 = x0mean;
+options = optimoptions('lsqnonlin','Algorithm',...
+                        'levenberg-marquardt','Display','iter','StepTolerance',1e-10);
+                    
+[x, resnorm, RES, ~, ~, ~, jac] =...
+    lsqnonlin(objective,x0,[],[],options);
+
+Jac = full(jac);
+P_ls = resnorm/(length(RES)-length(x0)).*inv(Jac'*Jac);
+
+% With a priori
 objective = @(x) costFcn(x,station,sat_epoch_et,tf,mu,1,P0,x0mean);
 [x_apriori, resnorm, RES, exitflag, ~, ~, jac] =...
     lsqnonlin(objective,x0,[],[],options);
@@ -450,7 +450,6 @@ Wc = diag([W0c; diag(Wi_cov)]);
 matrixRoot = sqrtm((n+lambda)*P0);
 
 CHI0 = x0mean;
-% CHI = zeros(n,2*n);
 
 for i = 1:n
     CHI(:,i) = x0mean + matrixRoot(i,:)';
@@ -463,8 +462,6 @@ end
 % Transform the sigma points using the nonlinear transform
     
 Y0 = fun(CHI0);
-
-% Y = zeros(length(Y0),2*n);
 
 for j = 1:2*n
     x0 = CHI(:,j);
@@ -1009,7 +1006,7 @@ function [weightedRes, parout] = difference(sol,station,measurementTimes,measure
     tf = tspan(end);
 
     % Compute the vector of measurements to be used
-    usedMeasurementsIndexes = measurementTimes < tf;
+    usedMeasurementsIndexes = measurementTimes<=tf;
     usedMeasurements = measurements(usedMeasurementsIndexes,:);
 
     stationName = station.name;
@@ -1023,7 +1020,7 @@ function [weightedRes, parout] = difference(sol,station,measurementTimes,measure
     weightedRes = [];
     parout = [];
     
-    for i=1:length(usedMeasurements)
+    for i=1:length(usedMeasurementsIndexes)
 
         rv_target_eci = deval(sol,measurementTimes(i));
         et = measurementTimes(i);
