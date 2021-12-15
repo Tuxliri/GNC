@@ -2,7 +2,7 @@
 % Assignment # 1
 % Author: Davide Iafrate
 
-%% Ex 1
+%% Exercise 1
 clearvars; close all; clc
 
 % Load kernels
@@ -67,6 +67,23 @@ P0 = [+2.6e-2 +1.4e-2 -1.8e-3 0 0 0;
        0 0 0 0 +1.6e-7 0;
        0 0 0 0 0 +1.6e-7];
 
+n = length(x0mean);
+
+% Weights computation
+alfa = 1e-2;
+beta = 2;
+k = 0;
+lambda = alfa^2*(n+k)-n;
+
+W0m = lambda/(n+lambda);
+W0c = lambda/(n+lambda)+(1-alfa^2+beta);
+
+Wi_mean = 1/(2*(n+lambda))*eye(2*n);
+Wi_cov = Wi_mean;
+
+Wm = diag([W0m; diag(Wi_mean)]);
+Wc = diag([W0c; diag(Wi_cov)]);
+
 % Set options for ODE solver
 opts = odeset('reltol', 1e-12, 'abstol', 1e-12);
 
@@ -77,7 +94,8 @@ xx = deval(sol,tspan);
 tt = tspan;
 
 % -----Point 1-----
-
+figure()
+hold on
 for i = 1:3
     
     % Latitude and longitude in degrees, altitude in meters
@@ -85,14 +103,20 @@ for i = 1:3
     lon = station(i).lon;
     alt = station(i).alt;
     
+    legendVisibility{i} = station(i).name;
+    
     minimumElevation = station(i).minimumElevation;
-    VIS1(:,i) = visibilityOld(xx(1:3,:),tt,lat,lon,alt,minimumElevation);
+    [VIS1(:,i),El(:,i)] = visibilityOld(xx(1:3,:),tt,lat,lon,alt,minimumElevation);
     
 %     VIS(:,i) = visibility(xx,tt,lat,lon,alt,minimumElevation);
     
     % Set first and last elements to 0
     VIS1(1,i) = 0; 
     VIS1(end,i) = 0;
+    Elevations = El(:,i).*(VIS1(:,i)>0);
+    Elevations(Elevations==0) = NaN;
+    
+    plot(tt,rad2deg(Elevations),'LineWidth',1.5)
     
     % Detect visibility windows
     riseIndexes = strfind(VIS1(:,i)',[0 1]);
@@ -103,17 +127,34 @@ for i = 1:3
     station(i).visibilityIndexes = [riseIndexes' setIndexes'];
 end
 
+% Plot minimum elevation lines
+yline(30,'--','30°')
+yline(20,'--','20°')
+yline(10,'--','10°')
+
+grid on
+grid minor
+legend(legendVisibility{:},'','','','Location','best')
+ylabel('Elevation [$\deg$]','Interpreter','latex')
+xLabels = cspice_et2utc(xticks(gca),'C',0);
+xLabels = xLabels(:,1:17);
+xticklabels(xLabels)
+ylim([0 90])
+
 % -----Point 2-----
 
 tSet = sort([station(1).tSet station(2).tSet station(3).tSet]);    % assemble from each station
 
 linearPt = zeros(6,6,length(tSet));
 
-% Linear method
+% Linear method (LinCOV)
 for i=1:length(tSet)
     tf = tSet(i);
     PHI = stateTransitionMatrix(t0,x0mean,tf,mu);
     linearPt(:,:,i) = PHI*P0*PHI';
+    sqrtLinCOVPrr(i) = sqrt(trace(linearPt(1:3,1:3,i)));
+    sqrtLinCOVPvv(i) = sqrt(trace(linearPt(4:6,4:6,i)));
+
 end
 
 % Unscented transform method
@@ -123,23 +164,83 @@ for i = 1:length(tSet)
     fun = @(x0) flow2BP(t0,x0,tf,mu);
     [xf_mean,Pt_i] = unscentedTransform(x0mean,P0,fun);
     unscentedPt(:,:,i) = Pt_i;
+    sqrtUTPrr(i) = sqrt(trace(Pt_i(1:3,1:3)));
+    sqrtUTPvv(i) = sqrt(trace(Pt_i(4:6,4:6)));
 end
+
+figure()
+hold on
+scatter([t0 tSet],[sqrt(trace(P0(1:3,1:3))) sqrtLinCOVPrr],'filled')
+scatter(tSet, sqrtUTPrr,'d')
+grid on
+ylabel('$\sqrt{tr(P_{rr})}$ [km]','Interpreter','latex')
+grid minor
+xLabels = cspice_et2utc(xticks(gca),'C',0);
+xLabels = xLabels(:,1:17);
+xticklabels(xLabels)
+legend('linCOV','UT method')
+
+figure()
+hold on
+scatter([t0 tSet],[sqrt(trace(P0(4:6,4:6))) sqrtLinCOVPvv],'filled')
+scatter(tSet, sqrtUTPvv,'d')
+grid on
+ylabel('$\sqrt{tr(P_{vv})}$ [km/s]','Interpreter','latex')
+grid minor
+xLabels = cspice_et2utc(xticks(gca),'C',0);
+xLabels = xLabels(:,1:17);
+xticklabels(xLabels)
+legend('linCOV','UT method')
+
+% -----Plot the uncertainy ellipsoid -----
+confidenceLevel = 95/100;   % Confidence level [%]
+
+% Plot the linear Transform uncertainty ellipsoid
+figure()
+error_ellipse(linearPt(1:3,1:3,end),[0;0;0],'conf',confidenceLevel)
+
+axis equal
+grid on
+grid minor
+
+xlabel('x [km]')
+ylabel('y [km]')
+zlabel('z [km]')
+view(-31,20)
+alpha(.8)
+
+% Plot the unscented Transform uncertainty ellipsoid
+figure()
+error_ellipse(unscentedPt(1:3,1:3,end),[0;0;0],'conf',confidenceLevel)
+axis equal
+grid on
+grid minor
+
+xlabel('x [km]')
+ylabel('y [km]')
+zlabel('z [km]')
+view(-31,20)
+alpha(.9)
+
+
 
 % -----Point 3: Montecarlo analysis-----
 
-% Draw 100 samples of the state from initial covariance P0
-n = 100;    Sigma = P0;
+% Draw 300 samples of the state from initial covariance P0
+n = 300;    Sigma = P0;
 R = mvnrnd(x0mean,Sigma,n);	% Each column of R contains a state to propagate
 
 tLastVisibility = tSet(end);
 xxLastVisibility = deval(sol,tLastVisibility);
 
-% LAST STATION IS LA-SILLA, find a way to automate this maybe
+
+% LAST STATION IS LA-SILLA
 
 % The nominal center of the FoV of the station is in direction:
-[azimuth, elevation, range, ~] = antenna_pointing(station(3).name,...
+[azimuth, elevation, ~, ~] = antenna_pointing(station(3).name,...
                                         tLastVisibility, xxLastVisibility);
 
+% antenna center pointing towards the propagated mean state
 antennaCenterVersor = [cos(azimuth)*cos(elevation) -sin(azimuth)*cos(elevation) sin(elevation)];
 
 for i = 1:n
@@ -147,7 +248,7 @@ for i = 1:n
 	xt = flow2BP(t0,xi,tLastVisibility,mu);
     
     % Compute the satellite position versor
-    [azimuth, elevation, range, ~] = antenna_pointing(station(3).name,...
+    [azimuth, elevation, ~, ~] = antenna_pointing(station(3).name,...
                                             tLastVisibility, xt);
     satVersor(i,:) = [cos(azimuth)*cos(elevation) -sin(azimuth)*cos(elevation) sin(elevation)];
     
@@ -162,29 +263,48 @@ x_f_mean = mean(B);
 % Compute the sample covariance of the propagated states
 Pfinal = cov(B);
 
+% Plot the montecarlo position distribution
+figure()
+hold on
+axis equal
+scatter3(B(:,1),B(:,2),B(:,3),'filled')
+error_ellipse(Pfinal(1:3,1:3),x_f_mean(1:3)','conf',confidenceLevel)
+alpha(0.5)
+grid on
+grid minor
+
+xlabel('x [m]')
+ylabel('y [m]')
+zlabel('z [m]')
+
 % The nominal center of the FoV of the station is in direction:
-[azimuth, elevation, range, ~] = antenna_pointing(station(3).name,...
+[azimuth, elevation, ~, ~] = antenna_pointing(station(3).name,...
                                         tLastVisibility, x_f_mean');
 
+% antenna center pointing towards the mean of montecarlo realizationa
 antennaCenterVersor = [cos(azimuth)*cos(elevation) -sin(azimuth)*cos(elevation) sin(elevation)];
 
 for i = 1:n
     % Compute the angle B/W the satellite and the antenna center
     angle(i) = acos(dot(antennaCenterVersor,satVersor(i,:)));
 end
-    
+
+figure()
 % Plot the % of points inside the station FoV
 insideFoVPoints = sum(rad2deg(angle)<(station(3).FoV)/2);
-pie([insideFoVPoints 100-insideFoVPoints],{'Points inside FoV', 'Points outside FoV'})
-
-sqrt(trace(unscentedPt(:,:,end)))
-sqrt(trace(linearPt(:,:,end)))
+outsideFoVPoints = n-insideFoVPoints;
+labels = {strcat(num2str(insideFoVPoints/n*100,3),'% Points inside FoV'),...
+          strcat(num2str(outsideFoVPoints/n*100,3),'% Points outside FoV')};
+pie([insideFoVPoints outsideFoVPoints],labels)
 
 %% Exercise 2
+close all
 
 % Replace the path below with your own installation path if not present as
 % a subfolder
 addpath('sgp4');
+
+mu = cspice_bodvrd('Earth','GM',1);
 
 % Set SGP4 parameters
 typerun    = 'u';  % user-provided inputs to SGP4 Matlab function
@@ -212,28 +332,61 @@ fprintf('TLE reference epoch: UTC %s', sat_epoch_str);
 % Generate the measurements for each station
 for k=1:3
     station(k).measurements = measurementFun(satrec,station(k));
-    
 end
 
-tf = [cspice_str2et('2021-Nov-21 14:00:00.0000 TDB');
-      cspice_str2et('2021-Nov-23 14:00:00.0000 TDB');
+tfList = [cspice_str2et('2021-Nov-21 14:00:00.0000 TDB');
+      cspice_str2et('2021-Nov-22 14:00:00.0000 TDB');
       cspice_str2et('2021-Nov-23 14:00:00.0000 TDB')];
 
-x0=sol.y(:,1);
-[residual0,parout]=costFcn(x0,station,sat_epoch_et,tf,mu,1);
-
-objective = @(x) costFcn(x,station,sat_epoch_et,tf,mu,1);
+P_ls = zeros(6,6,3);
+  
+USEJ2ORBIT = 1;
 x0 = x0mean;
+    
+objective = @(x) costFcn(x,station,sat_epoch_et,tf,mu,USEJ2ORBIT);
+  
 options = optimoptions('lsqnonlin','Algorithm',...
-                        'levenberg-marquardt','Display','iter','StepTolerance',1e-10);
-                    
-[x, resnorm, RES, ~, ~, ~, jac] =...
-    lsqnonlin(objective,x0,[],[],options);
+        'levenberg-marquardt','Display','iter','StepTolerance',1e-10);
+    
+for jj = 1:3
+    tf = tfList(jj);
 
-Jac = full(jac);
-P_ls = resnorm/(length(RES)-length(x0)).*inv(Jac'*Jac);
+    [x(:,jj), resnorm, RES, ~, ~, ~, jac] =...
+        lsqnonlin(objective,x0,[],[],options);
+    
+    Jac = full(jac);
+    P_ls(:,:,jj) = resnorm/(length(RES)-length(x0)).*inv(Jac'*Jac);
+end
 
-% With a priori
+faceNumber = [20 20 20];
+spacing = (0.1:0.1:0.3)/2;
+colours = {'#EDB120','#D95319','#4DBEEE'};
+legendEntries = {'2021-Nov-21 14:00', '2021-Nov-22 14:00', '2021-Nov-23 14:00'};
+
+% Plot the three final position uncertainty ellipsoids
+for jj = 1:3
+    figure()
+    mean_center = real(x(1:3,jj)');
+    error_ellipse(real(P_ls(1:3,1:3,jj)),[0,0,0])
+    axis equal
+    xt = xticks;
+    yt = yticks;
+    zt = zticks;
+    xticklabels(num2cell(xt*1e3))
+    yticklabels(num2cell(yt*1e3))
+    zticklabels(num2cell(zt*1e3))
+    grid on
+    grid minor
+    
+    xlabel('x [m]')
+    ylabel('y [m]')
+    zlabel('z [m]')
+    legend(legendEntries{jj},'Location','best')
+end
+
+% ----- Point (2b) ---- With a priori information
+tf = tfList(1);
+
 objective = @(x) costFcn(x,station,sat_epoch_et,tf,mu,1,P0,x0mean);
 [x_apriori, resnorm, RES, exitflag, ~, ~, jac] =...
     lsqnonlin(objective,x0,[],[],options);
@@ -388,32 +541,48 @@ for i = 2:length(TIMEVECTOR)-1
     uncertaintyCovariance(:,i) = diag(sqrt(abs(Pk(:,:,i))));
 end
 
-% FIX
+% FIX LEGEND LABELS
 figure()
 hold on
-plot(TIMEVECTOR(2:end),vecnorm(uncertaintyCovariance(1:3,:)))   % Estimated error position
-plot(TIMEVECTOR(2:end),vecnorm(errorTrueTraj(1:3,:)))   % Actual error position
-legendEntries = {'$||\vec{r}_{UKF}\pm3\sigma||$',...
-                '$||\vec{r}_{UKF}-\vec{r}_{true}||$'};
-legend(legendEntries{:},'Interpreter','latex')
+
+% Estimated error position
+plot(TIMEVECTOR(2:end),vecnorm(uncertaintyCovariance(1:3,:)),'LineWidth',1.4)
+
+% Actual error position
+plot(TIMEVECTOR(2:end),vecnorm(errorTrueTraj(1:3,:)),'LineWidth',1.4)
+
+legendEntries = {'$\sigma_{rr,k}$',...
+                '$||\vec{r}_k^{UKF}-\vec{r}_{true}||$'};
+legend(legendEntries{:},'Interpreter','latex','FontSize',14)
 grid on
 grid minor
+xLabels = cspice_et2utc(xticks(gca),'C',0);
+xLabels = xLabels(:,1:17);
+xticklabels(xLabels)
+ylabel('Position estimation error [m]','Interpreter','latex')
 
 figure()
 hold on
-plot(TIMEVECTOR(2:end),vecnorm(uncertaintyCovariance(4:6,:)))   % Estimated error velocity
-plot(TIMEVECTOR(2:end),vecnorm(errorTrueTraj(4:6,:)))   % Actual error position
-legendEntries = {'$||3\vec{\sigma}_{vv}^{UKF}||$',...
-                '$||\vec{v}_{UKF}-\vec{v}_{true}||$'};
-legend(legendEntries{:},'Interpreter','latex')
+
+% Estimated velocity error 
+plot(TIMEVECTOR(2:end),vecnorm(uncertaintyCovariance(4:6,:)),'LineWidth',1.4)
+
+% Actual velocity error
+plot(TIMEVECTOR(2:end),vecnorm(errorTrueTraj(4:6,:)),'LineWidth',1.4)  
+
+legendEntries = {'$\sigma_{vv,k}$',...
+                '$||\vec{v}_k^{UKF}-\vec{v}_{true}||$'};
+legend(legendEntries{:},'Interpreter','latex','FontSize',14)
 grid on
 grid minor
+xLabels = cspice_et2utc(xticks(gca),'C',0);
+xLabels = xLabels(:,1:17);
+xticklabels(xLabels)
+ylabel('Velocity estimation error [m/s]','Interpreter','latex')
 
 % Plot the final position uncertainty ellipsoid
 figure()
-sigmas = num2cell(sqrt(abs(real(diag(Pk(:,:,end))))));
-pos = num2cell(real(xk(1:3,end)'));
-ellipsoid(pos{:},sigmas{1:3})
+error_ellipse(real(Pk(1:3,1:3,end)),[0;0;0],'conf',0.95)
 axis equal
 xlabel('x [km]')
 ylabel('y [km]')
@@ -450,6 +619,7 @@ Wc = diag([W0c; diag(Wi_cov)]);
 matrixRoot = sqrtm((n+lambda)*P0);
 
 CHI0 = x0mean;
+% CHI = zeros(n,2*n);
 
 for i = 1:n
     CHI(:,i) = x0mean + matrixRoot(i,:)';
@@ -462,6 +632,8 @@ end
 % Transform the sigma points using the nonlinear transform
     
 Y0 = fun(CHI0);
+
+% Y = zeros(length(Y0),2*n);
 
 for j = 1:2*n
     x0 = CHI(:,j);
@@ -616,7 +788,7 @@ switch stationName
         RA = atan2(rho(2),rho(1));
         DECL = asin(rho(3)/norm(rho));
         
-        varargout = {rad2deg(RA), rad2deg(DECL)};
+        varargout = {RA, DECL};
         
     otherwise
         error('Station not part of the network!')
@@ -625,7 +797,7 @@ end
 
 end
 
-function VIS = visibilityOld(r,et,lat,lon,alt,minimumElevation)
+function [VIS,El] = visibilityOld(r,et,lat,lon,alt,minimumElevation)
 %VISIBILITY function that checks for visibility of the given object from a
 %certain ground station
 %
@@ -637,7 +809,7 @@ function VIS = visibilityOld(r,et,lat,lon,alt,minimumElevation)
 %   alt     station altitude
 %
 % OUTPUT:
-%   VIS     logic visibility conidition
+%   VIS     logic visibility condition
 %               |-> 1 if visible
 %               |-> 0 if not visible
 
@@ -681,7 +853,7 @@ for i = 1:length(et)
 end
 
 VIS = (El > minimumElevation)';
-
+El = El';
 % Plot something
 end
 
@@ -984,7 +1156,7 @@ if nargin>6
 else
 end
 
-for k=1:length(stations)
+for k=1:1
     T = struct2table(stations(k).measurements);
     
     % Nx3 or Nx2 matrix of measurements
@@ -1006,7 +1178,7 @@ function [weightedRes, parout] = difference(sol,station,measurementTimes,measure
     tf = tspan(end);
 
     % Compute the vector of measurements to be used
-    usedMeasurementsIndexes = measurementTimes<=tf;
+    usedMeasurementsIndexes = measurementTimes < tf;
     usedMeasurements = measurements(usedMeasurementsIndexes,:);
 
     stationName = station.name;
@@ -1020,7 +1192,7 @@ function [weightedRes, parout] = difference(sol,station,measurementTimes,measure
     weightedRes = [];
     parout = [];
     
-    for i=1:length(usedMeasurementsIndexes)
+    for i=1:length(usedMeasurements)
 
         rv_target_eci = deval(sol,measurementTimes(i));
         et = measurementTimes(i);
@@ -1331,4 +1503,283 @@ function [data,et,measurement] = readTDM(fileName)
             tline = fgetl(fid);
         end
     end
+end
+
+function h = error_ellipse(varargin)
+% ERROR_ELLIPSE - plot an error ellipse, or ellipsoid, defining confidence region
+%    ERROR_ELLIPSE(C22) - Given a 2x2 covariance matrix, plot the
+%    associated error ellipse, at the origin. It returns a graphics handle
+%    of the ellipse that was drawn.
+%
+%    ERROR_ELLIPSE(C33) - Given a 3x3 covariance matrix, plot the
+%    associated error ellipsoid, at the origin, as well as its projections
+%    onto the three axes. Returns a vector of 4 graphics handles, for the
+%    three ellipses (in the X-Y, Y-Z, and Z-X planes, respectively) and for
+%    the ellipsoid.
+%
+%    ERROR_ELLIPSE(C,MU) - Plot the ellipse, or ellipsoid, centered at MU,
+%    a vector whose length should match that of C (which is 2x2 or 3x3).
+%
+%    ERROR_ELLIPSE(...,'Property1',Value1,'Name2',Value2,...) sets the
+%    values of specified properties, including:
+%      'C' - Alternate method of specifying the covariance matrix
+%      'mu' - Alternate method of specifying the ellipse (-oid) center
+%      'conf' - A value betwen 0 and 1 specifying the confidence interval.
+%        the default is 0.5 which is the 50% error ellipse.
+%      'scale' - Allow the plot the be scaled to difference units.
+%      'style' - A plotting style used to format ellipses.
+%      'clip' - specifies a clipping radius. Portions of the ellipse, -oid,
+%        outside the radius will not be shown.
+%
+%    NOTES: C must be positive definite for this function to work properly.
+
+default_properties = struct(...
+  'C', [], ... % The covaraince matrix (required)
+  'mu', [], ... % Center of ellipse (optional)
+  'conf', 0.5, ... % Percent confidence/100
+  'scale', 1, ... % Scale factor, e.g. 1e-3 to plot m as km
+  'style', '', ...  % Plot style
+  'clip', inf); % Clipping radius
+
+if length(varargin) >= 1 & isnumeric(varargin{1})
+  default_properties.C = varargin{1};
+  varargin(1) = [];
+end
+
+if length(varargin) >= 1 & isnumeric(varargin{1})
+  default_properties.mu = varargin{1};
+  varargin(1) = [];
+end
+
+if length(varargin) >= 1 & isnumeric(varargin{1})
+  default_properties.conf = varargin{1};
+  varargin(1) = [];
+end
+
+if length(varargin) >= 1 & isnumeric(varargin{1})
+  default_properties.scale = varargin{1};
+  varargin(1) = [];
+end
+
+if length(varargin) >= 1 & ~ischar(varargin{1})
+  error('Invalid parameter/value pair arguments.') 
+end
+
+prop = getopt(default_properties, varargin{:});
+C = prop.C;
+
+if isempty(prop.mu)
+  mu = zeros(length(C),1);
+else
+  mu = prop.mu;
+end
+
+conf = prop.conf;
+scale = prop.scale;
+style = prop.style;
+
+if conf <= 0 | conf >= 1
+  error('conf parameter must be in range 0 to 1, exclusive')
+end
+
+[r,c] = size(C);
+if r ~= c | (r ~= 2 & r ~= 3)
+  error(['Don''t know what to do with ',num2str(r),'x',num2str(c),' matrix'])
+end
+
+x0=mu(1);
+y0=mu(2);
+
+% Compute quantile for the desired percentile
+k = sqrt(qchisq(conf,r)); % r is the number of dimensions (degrees of freedom)
+
+hold_state = get(gca,'nextplot');
+
+if r==3 & c==3
+  z0=mu(3);
+  
+  % Make the matrix has positive eigenvalues - else it's not a valid covariance matrix!
+  if any(eig(C) <=0)
+    error('The covariance matrix must be positive definite (it has non-positive eigenvalues)')
+  end
+
+  % C is 3x3; extract the 2x2 matricies, and plot the associated error
+  % ellipses. They are drawn in space, around the ellipsoid; it may be
+  % preferable to draw them on the axes.
+  Cxy = C(1:2,1:2);
+  Cyz = C(2:3,2:3);
+  Czx = C([3 1],[3 1]);
+
+  [x,y,z] = getpoints(Cxy,prop.clip);
+  h1=plot3(x0+k*x,y0+k*y,z0+k*z,prop.style);hold on
+  [y,z,x] = getpoints(Cyz,prop.clip);
+  h2=plot3(x0+k*x,y0+k*y,z0+k*z,prop.style);hold on
+  [z,x,y] = getpoints(Czx,prop.clip);
+  h3=plot3(x0+k*x,y0+k*y,z0+k*z,prop.style);hold on
+
+  
+  [eigvec,eigval] = eig(C);
+
+  [X,Y,Z] = ellipsoid(0,0,0,1,1,1);
+  XYZ = [X(:),Y(:),Z(:)]*sqrt(eigval)*eigvec';
+  
+  X(:) = scale*(k*XYZ(:,1)+x0);
+  Y(:) = scale*(k*XYZ(:,2)+y0);
+  Z(:) = scale*(k*XYZ(:,3)+z0);
+  h4=surf(X,Y,Z);
+  colormap gray
+  alpha(0.3)
+  camlight
+  if nargout
+    h=[h1 h2 h3 h4];
+  end
+elseif r==2 & c==2
+  % Make the matrix has positive eigenvalues - else it's not a valid covariance matrix!
+  if any(eig(C) <=0)
+    error('The covariance matrix must be positive definite (it has non-positive eigenvalues)')
+  end
+
+  [x,y,z] = getpoints(C,prop.clip);
+  h1=plot(scale*(x0+k*x),scale*(y0+k*y),prop.style);
+  set(h1,'zdata',z+1)
+  if nargout
+    h=h1;
+  end
+else
+  error('C (covaraince matrix) must be specified as a 2x2 or 3x3 matrix)')
+end
+%axis equal
+
+set(gca,'nextplot',hold_state);
+end
+function [x,y,z] = getpoints(C,clipping_radius)
+%---------------------------------------------------------------
+% getpoints - Generate x and y points that define an ellipse, given a 2x2
+%   covariance matrix, C. z, if requested, is all zeros with same shape as
+%   x and y.
+
+n=100; % Number of points around ellipse
+p=0:pi/n:2*pi; % angles around a circle
+
+[eigvec,eigval] = eig(C); % Compute eigen-stuff
+xy = [cos(p'),sin(p')] * sqrt(eigval) * eigvec'; % Transformation
+x = xy(:,1);
+y = xy(:,2);
+z = zeros(size(x));
+
+% Clip data to a bounding radius
+if nargin >= 2
+  r = sqrt(sum(xy.^2,2)); % Euclidian distance (distance from center)
+  x(r > clipping_radius) = nan;
+  y(r > clipping_radius) = nan;
+  z(r > clipping_radius) = nan;
+end
+end
+%---------------------------------------------------------------
+function x=qchisq(P,n)
+% QCHISQ(P,N) - quantile of the chi-square distribution.
+if nargin<2
+  n=1;
+end
+
+s0 = P==0;
+s1 = P==1;
+s = P>0 & P<1;
+x = 0.5*ones(size(P));
+x(s0) = -inf;
+x(s1) = inf;
+x(~(s0|s1|s))=nan;
+
+for ii=1:14
+  dx = -(pchisq(x(s),n)-P(s))./dchisq(x(s),n);
+  x(s) = x(s)+dx;
+  if all(abs(dx) < 1e-6)
+    break;
+  end
+end
+end
+%---------------------------------------------------------------
+function F=pchisq(x,n)
+% PCHISQ(X,N) - Probability function of the chi-square distribution.
+if nargin<2
+  n=1;
+end
+F=zeros(size(x));
+
+if rem(n,2) == 0
+  s = x>0;
+  k = 0;
+  for jj = 0:n/2-1;
+    k = k + (x(s)/2).^jj/factorial(jj);
+  end
+  F(s) = 1-exp(-x(s)/2).*k;
+else
+  for ii=1:numel(x)
+    if x(ii) > 0
+      F(ii) = quadl(@dchisq,0,x(ii),1e-6,0,n);
+    else
+      F(ii) = 0;
+    end
+  end
+end
+end
+%---------------------------------------------------------------
+function f=dchisq(x,n)
+% DCHISQ(X,N) - Density function of the chi-square distribution.
+if nargin<2
+  n=1;
+end
+f=zeros(size(x));
+s = x>=0;
+f(s) = x(s).^(n/2-1).*exp(-x(s)/2)./(2^(n/2)*gamma(n/2));
+end
+%---------------------------------------------------------------
+function properties = getopt(properties,varargin)
+%GETOPT - Process paired optional arguments as 'prop1',val1,'prop2',val2,...
+%
+%   getopt(properties,varargin) returns a modified properties structure,
+%   given an initial properties structure, and a list of paired arguments.
+%   Each argumnet pair should be of the form property_name,val where
+%   property_name is the name of one of the field in properties, and val is
+%   the value to be assigned to that structure field.
+%
+%   No validation of the values is performed.
+%
+% EXAMPLE:
+%   properties = struct('zoom',1.0,'aspect',1.0,'gamma',1.0,'file',[],'bg',[]);
+%   properties = getopt(properties,'aspect',0.76,'file','mydata.dat')
+% would return:
+%   properties = 
+%         zoom: 1
+%       aspect: 0.7600
+%        gamma: 1
+%         file: 'mydata.dat'
+%           bg: []
+%
+% Typical usage in a function:
+%   properties = getopt(properties,varargin{:})
+
+% Process the properties (optional input arguments)
+prop_names = fieldnames(properties);
+TargetField = [];
+for ii=1:length(varargin)
+  arg = varargin{ii};
+  if isempty(TargetField)
+    if ~ischar(arg)
+      error('Propery names must be character strings');
+    end
+    f = find(strcmp(prop_names, arg));
+    if length(f) == 0
+      error('%s ',['invalid property ''',arg,'''; must be one of:'],prop_names{:});
+    end
+    TargetField = arg;
+  else
+    % properties.(TargetField) = arg; % Ver 6.5 and later only
+    properties = setfield(properties, TargetField, arg); % Ver 6.1 friendly
+    TargetField = '';
+  end
+end
+if ~isempty(TargetField)
+  error('Property names and values must be specified in pairs.');
+end
 end
