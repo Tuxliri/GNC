@@ -6,5 +6,5 @@ In this repository you can find the code developed for the course of Spacecraft 
 
 The two assignments focused on guidance and navigation for orbital spacecrafts.
 
-1. Guidance: optimized impulsive and continous S/C trajectories to Earth-Moon Lagrange point. [paper](./Assignment_01/SGN____Assignment_1.pdf)
-2. Navigation: developed least square batch filters and Kalman filters for state estimation of Low Earth Orbit spacecrafts. [paper](./Assignment02/Assignment02_Navigation.pdf)
+1. Guidance: optimized impulsive and continous S/C trajectories to Earth-Moon Lagrange point. [[Paper]](./Assignment_01/SGN____Assignment_1.pdf)
+2. Navigation: developed least square batch filters and Kalman filters for state estimation of Low Earth Orbit spacecrafts. [[Paper]](./Assignment02/Assignment02_Navigation.pdf)
